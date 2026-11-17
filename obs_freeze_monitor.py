@@ -418,7 +418,7 @@ def resync_uvc_exposure() -> None:
     if exp_script.is_file() and uvc_bin.is_file():
         try:
             subprocess.run(
-                ["/usr/bin/python3", str(exp_script), "--uvc-bin", str(uvc_bin), "--force-sync", "--quiet-unchanged"],
+                [sys.executable, str(exp_script), "--uvc-bin", str(uvc_bin), "--force-sync", "--quiet-unchanged"],
                 timeout=8.0,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

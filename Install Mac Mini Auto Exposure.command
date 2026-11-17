@@ -7,6 +7,11 @@ APP_SUPPORT="$HOME/Library/Application Support/HudsonRiverUVC"
 PLIST_LABEL="live.hudsonriver.uvc-exposure"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 LOG_PATH="$HOME/Library/Logs/hudson-uvc-exposure.log"
+if [[ -x "/opt/homebrew/bin/python3" ]]; then
+  PY_BIN="/opt/homebrew/bin/python3"
+else
+  PY_BIN="/usr/bin/python3"
+fi
 
 echo "===================================================================="
 echo "  Hudson River Cam — Insta360 Link 2C Pro Day/Night Exposure Setup"
@@ -43,7 +48,7 @@ fi
 echo ""
 echo "2) Today's Hudson River Solar Exposure Schedule:"
 echo "--------------------------------------------------------------------"
-/usr/bin/python3 "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util" --schedule-today
+"$PY_BIN" "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util" --schedule-today
 
 echo ""
 echo "3) Registering standalone LaunchAgent..."
@@ -58,7 +63,7 @@ cat > "$PLIST_PATH" <<EOF
     <string>${PLIST_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>${PY_BIN}</string>
         <string>${APP_SUPPORT}/auto_exposure_day_night.py</string>
         <string>--uvc-bin</string>
         <string>${APP_SUPPORT}/uvc-util</string>
@@ -88,7 +93,7 @@ if ! launchctl bootstrap "$GUI_DOMAIN" "$PLIST_PATH" 2>/dev/null; then
 fi
 
 echo "Applying current exposure target right now..."
-/usr/bin/python3 "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util"
+"$PY_BIN" "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util"
 
 echo ""
 echo "===================================================================="

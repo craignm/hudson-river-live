@@ -1338,7 +1338,12 @@ echo "--------------------------------------------------------------------"
 echo ""
 echo "3) Today's Hudson River Solar Exposure Schedule:"
 echo "--------------------------------------------------------------------"
-/usr/bin/python3 "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util" --schedule-today
+if [[ -x "/opt/homebrew/bin/python3" ]]; then
+  PY_BIN="/opt/homebrew/bin/python3"
+else
+  PY_BIN="/usr/bin/python3"
+fi
+"$PY_BIN" "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util" --schedule-today
 
 cat > "$PLIST_PATH" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1349,7 +1354,7 @@ cat > "$PLIST_PATH" <<'EOF'
     <string>live.hudsonriver.uvc-exposure</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>__PY_BIN__</string>
         <string>__APP_SUPPORT__/auto_exposure_day_night.py</string>
         <string>--uvc-bin</string>
         <string>__APP_SUPPORT__/uvc-util</string>
@@ -1370,13 +1375,18 @@ cat > "$PLIST_PATH" <<'EOF'
 </dict>
 </plist>
 EOF
-/usr/bin/python3 -c '
+"$PY_BIN" -c '
 import sys
 from pathlib import Path
 p = Path(sys.argv[1])
-t = p.read_text().replace("__APP_SUPPORT__", sys.argv[2]).replace("__LOG_PATH__", sys.argv[3])
+t = (
+    p.read_text()
+    .replace("__PY_BIN__", sys.argv[2])
+    .replace("__APP_SUPPORT__", sys.argv[3])
+    .replace("__LOG_PATH__", sys.argv[4])
+)
 p.write_text(t)
-' "$PLIST_PATH" "$APP_SUPPORT" "$LOG_PATH"
+' "$PLIST_PATH" "$PY_BIN" "$APP_SUPPORT" "$LOG_PATH"
 
 GUI_DOMAIN="gui/$(id -u)"
 launchctl bootout "$GUI_DOMAIN/$PLIST_LABEL" 2>/dev/null || true
@@ -1387,7 +1397,7 @@ fi
 
 echo ""
 echo "4) Applying current exposure target right now..."
-/usr/bin/python3 "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util"
+"$PY_BIN" "$APP_SUPPORT/auto_exposure_day_night.py" --uvc-bin "$APP_SUPPORT/uvc-util"
 
 echo ""
 echo "===================================================================="

@@ -97,6 +97,11 @@ ssh -o BatchMode=yes "$REMOTE_HOST" '
   PLIST_LABEL="live.hudsonriver.ptz-server"
   PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
   LOG_PATH="$HOME/Library/Logs/hudson-ptz-server.log"
+  if [ -x "/opt/homebrew/bin/python3" ]; then
+    PY_BIN="/opt/homebrew/bin/python3"
+  else
+    PY_BIN="/usr/bin/python3"
+  fi
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
   cat > "$PLIST_PATH" << EOF
@@ -108,7 +113,7 @@ ssh -o BatchMode=yes "$REMOTE_HOST" '
     <string>$PLIST_LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>$PY_BIN</string>
         <string>-B</string>
         <string>-u</string>
         <string>$APP_DIR/server.py</string>
