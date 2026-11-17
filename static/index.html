@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hudson River PTZ Director — Proof of Concept</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #131a26;
+      --panel-2: #1a2333;
+      --border: #273449;
+      --text: #e6edf7;
+      --muted: #8fa1bc;
+      --accent: #38bdf8;
+      --heli: #f59e0b;
+      --air: #38bdf8;
+      --ship: #10b981;
+      --cv: #e879f9;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+      min-height: 100vh;
+    }
+    body.obs-mode { overflow: hidden; background: #000; }
+    body.obs-mode header,
+    body.obs-mode .synoptic-card,
+    body.obs-mode .bottom-grid,
+    body.obs-mode .ptz-card-header { display: none !important; }
+    body.obs-mode .main-grid { display: block; padding: 0; }
+    body.obs-mode .ptz-card { border: none; border-radius: 0; background: #000; }
+    body.obs-mode .viewport-wrap { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; }
+
+    html.hud-mode, body.hud-mode { overflow: hidden; background: transparent !important; }
+    body.hud-mode header,
+    body.hud-mode .bottom-grid,
+    body.hud-mode .card-header,
+    body.hud-mode #ptzCanvas,
+    body.hud-mode #ptzHudTop { display: none !important; }
+    body.hud-mode.no-chyron #chyron { display: none !important; }
+    body.hud-mode .main-grid { display: block; padding: 0; }
+    body.hud-mode .synoptic-card { border: none; border-radius: 0; background: transparent !important; }
+    body.hud-mode .synoptic-card .viewport-wrap { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; background: transparent !important; }
+    body.hud-mode #synopticCanvas { cursor: default; background: transparent !important; }
+    body.hud-mode .ptz-card { position: fixed; inset: 0; border: none; border-radius: 0; background: transparent !important; pointer-events: none; }
+    body.hud-mode .ptz-card .viewport-wrap { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; background: transparent !important; }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 18px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
+    .dot.live { background: #10b981; box-shadow: 0 0 8px #10b981aa; }
+    .dot.sim { background: #f59e0b; }
+
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    select, button, input[type="number"], input[type="text"] {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 5px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    input[type="text"] { cursor: text; width: 205px; }
+    button:hover, select:hover { border-color: var(--accent); }
+    button.active {
+      background: rgba(56, 189, 248, 0.18);
+      border-color: var(--accent);
+      color: #7dd3fc;
+      font-weight: 600;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      padding: 14px 18px 8px;
+    }
+    @media (max-width: 1100px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      overflow: hidden;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 13px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .card-header strong { color: var(--text); font-size: 13px; }
+    .viewport-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #05080d;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    #synopticCanvas { cursor: crosshair; }
+
+    /* Broadcast Lower-Third Overlay inside PTZ view */
+    .chyron {
+      position: absolute;
+      left: 22px;
+      bottom: 20px;
+      max-width: calc(100% - 44px);
+      background: rgba(9, 13, 22, 0.84);
+      backdrop-filter: blur(10px);
+      border-left: 4px solid var(--accent);
+      border-radius: 6px;
+      padding: 9px 15px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+    .chyron.heli { border-left-color: var(--heli); }
+    .chyron.vessel { border-left-color: var(--ship); }
+    .chyron.cv { border-left-color: var(--cv); }
+    .chyron-top {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #fff;
+    }
+    .chyron-badge {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.12);
+      color: #e2e8f0;
+    }
+    .chyron-sub {
+      margin-top: 2px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .ptz-hud-top {
+      position: absolute;
+      top: 12px;
+      right: 14px;
+      background: rgba(9, 13, 22, 0.72);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 6px;
+      padding: 4px 9px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: #e2e8f0;
+      pointer-events: none;
+    }
+
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 14px;
+      padding: 6px 18px 18px;
+    }
+    @media (max-width: 1100px) {
+      .bottom-grid { grid-template-columns: 1fr; }
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td {
+      text-align: left;
+      padding: 7px 11px;
+      border-bottom: 1px solid rgba(39, 52, 73, 0.6);
+    }
+    th { color: var(--muted); font-weight: 600; background: rgba(26, 35, 51, 0.5); }
+    tbody tr { cursor: pointer; transition: background 0.12s; }
+    tbody tr:hover { background: rgba(56, 189, 248, 0.08); }
+    tbody tr.selected { background: rgba(56, 189, 248, 0.16); }
+    .tag {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .tag.helicopter { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    .tag.aircraft { background: rgba(56, 189, 248, 0.2); color: #7dd3fc; }
+    .tag.vessel { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+
+    .calib-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 12px;
+    }
+    .calib-field label {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .calib-field input { width: 100%; cursor: text; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Hudson River Synoptic + PTZ Director</h1>
+      <span class="pill"><span id="adsbDot" class="dot"></span><span id="adsbStatus">ADS-B: connecting…</span></span>
+      <span class="pill"><span id="aisDot" class="dot sim"></span><span id="aisStatus">AIS: sim</span></span>
+      <span class="pill"><span id="obsCamDot" class="dot"></span><span id="obsCamStatus">OBS Cam: waiting…</span></span>
+      <span class="pill"><span id="cvDot" class="dot"></span><span id="cvStatus">CV Spotter: standby</span></span>
+    </div>
+    <div class="controls">
+      <select id="videoSourceSelect" title="Select Synoptic Camera Input">
+        <option value="obs">Source: Live OBS Stream</option>
+        <option value="snapshot" selected>Source: Chelsea Snapshot (Fallback)</option>
+        <option value="webcam">Source: Local USB Cam (Browser)</option>
+      </select>
+      <input id="obsCamInput" type="text" placeholder="obs://127.0.0.1:4455" title="OBS WebSocket URL (e.g. obs://127.0.0.1:4455 or obs://:password@host:4455)" />
+      <button id="btnConnectObs" title="Connect to OBS WebSocket">Connect</button>
+      <select id="cameraDeviceSelect" style="display:none;"></select>
+      <button id="btnAuto" class="active">Auto-Director: ON</button>
+      <button id="btnNext">Next Target ⏭</button>
+      <select id="cvModeSelect" title="Assist Only: CV refines ADS-B/AIS targets without reflection false positives. Strict: also track coherent visual-only movers. Off: transponder-only.">
+        <option value="assist" selected>CV: Assist Transponders</option>
+        <option value="strict">CV: + Standalone Movers</option>
+        <option value="off">CV: OFF</option>
+      </select>
+      <button id="btnSimShips" class="active" title="Simulate Hudson ferries, fireboat & tugs until local AIS SDR is connected">Sim Boats: ON</button>
+      <button id="btnRings" title="Overlay 5x, 10x, 20x, 30x PTZ zoom footprints on synoptic view">Zoom Boxes</button>
+      <button id="btnLandmarks" title="Show calibrated 3D NYC skyline reference pins">3D Pins</button>
+      <a href="/?obs=1" target="_blank" style="text-decoration:none;"><button type="button" title="Fullscreen simulated PTZ zoom view">PTZ View ↗</button></a>
+      <a href="/?hud=1" target="_blank" style="text-decoration:none;"><button type="button" title="Zero-copy transparent AR target overlay for OBS Browser Source">OBS HUD ↗</button></a>
+    </div>
+  </header>
+
+  <main class="main-grid">
+    <!-- Left: Wide Synoptic Spotter -->
+    <section class="card synoptic-card">
+      <div class="card-header">
+        <div><strong>1. Synoptic Spotter</strong> — Insta360 Link 2C (68.0° HFOV, 2560×1440 GPS-Locked)</div>
+        <div>Click any boat/aircraft or click water/sky to slew PTZ</div>
+      </div>
+      <div class="viewport-wrap">
+        <canvas id="synopticCanvas" width="1920" height="1080"></canvas>
+      </div>
+    </section>
+
+    <!-- Right: Virtual / Hardware PTZ Output -->
+    <section class="card ptz-card">
+      <div class="card-header ptz-card-header">
+        <div><strong>2. PTZ Broadcast Output</strong> — PID + Velocity Feed-Forward</div>
+        <div class="controls">
+          <span>Zoom:</span>
+          <button class="zoom-btn active" data-z="0">Auto</button>
+          <button class="zoom-btn" data-z="5">5x</button>
+          <button class="zoom-btn" data-z="10">10x</button>
+          <button class="zoom-btn" data-z="20">20x</button>
+          <button class="zoom-btn" data-z="30">30x</button>
+        </div>
+      </div>
+      <div class="viewport-wrap">
+        <canvas id="ptzCanvas" width="1920" height="1080"></canvas>
+        <div id="ptzHudTop" class="ptz-hud-top">PAN +0.0°  TILT +0.0°  ZOOM 1.0x</div>
+        <div id="chyron" class="chyron">
+          <div class="chyron-top">
+            <span id="chyronTitle">SCANNING HUDSON CORRIDOR</span>
+            <span id="chyronBadge" class="chyron-badge">STANDBY</span>
+          </div>
+          <div id="chyronSub" class="chyron-sub">Waiting for ADS-B / AIS / Computer Vision targets…</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <section class="bottom-grid">
+    <div class="card">
+      <div class="card-header">
+        <div><strong>Live World Model & Director Queue</strong> (Ranked by Interest + Novelty)</div>
+        <div id="dwellLabel">Dwell timer: —</div>
+      </div>
+      <div style="max-height: 245px; overflow-y: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Callsign / Vessel</th>
+              <th>Details</th>
+              <th>Alt / Len</th>
+              <th>Speed</th>
+              <th>Range</th>
+              <th>Auto Zoom</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody id="targetTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div><strong>3D Window Calibration</strong> (Chelsea View)</div>
+        <button id="btnSaveCalib">Save Pose</button>
+      </div>
+      <div class="calib-grid">
+        <div class="calib-field">
+          <label>Azimuth (° true, 207.2=SSW)</label>
+          <input id="calAz" type="number" step="0.05" value="207.186" />
+        </div>
+        <div class="calib-field">
+          <label>Tilt (° above horizon)</label>
+          <input id="calTilt" type="number" step="0.05" value="3.171" />
+        </div>
+        <div class="calib-field">
+          <label>Roll (° level)</label>
+          <input id="calRoll" type="number" step="0.05" value="-0.945" />
+        </div>
+        <div class="calib-field">
+          <label>Link 2C HFOV (°)</label>
+          <input id="calHfov" type="number" step="0.1" value="67.957" />
+        </div>
+        <div class="calib-field">
+          <label>Window Altitude (m MSL)</label>
+          <input id="calAlt" type="number" step="0.5" value="86.0" />
+        </div>
+        <div class="calib-field">
+          <label>Lens Barrel Distortion (k1)</label>
+          <input id="calK1" type="number" step="0.002" value="-0.06" />
+        </div>
+        <div class="calib-field">
+          <label>ADS-B Feed Lead Time (s)</label>
+          <input id="calLead" type="number" step="0.1" value="0.9" />
+        </div>
+        <div class="calib-field">
+          <label>Simulated Scale Guide</label>
+          <select id="silhouetteMode">
+            <option value="assist">Show True-Scale Optical Guide</option>
+            <option value="raw">Raw Link 2C Pixels Only</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Hidden media elements -->
+  <video id="webcamVideo" autoplay playsinline muted style="display:none;"></video>
+  <script src="/app.js"></script>
+</body>
+</html>

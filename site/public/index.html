@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <meta name="theme-color" content="#05080d" />
+
+  <title>Hudson River Live — 24/7 View from 17th St, New York</title>
+  <meta name="description" content="Live 24/7 camera overlooking Little Island, the Lower Hudson River, One World Trade Center, Jersey City, and Upper New York Bay from 17th Street in Chelsea, NYC." />
+
+  <!-- OpenGraph / iMessage / Slack / Social Preview -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="hudsonriver.live" />
+  <meta property="og:title" content="Hudson River Live — 17th St, New York" />
+  <meta property="og:description" content="Live 24/7 view looking SSW across Little Island, Lower Manhattan, Jersey City, the Statue of Liberty, and the Verrazzano-Narrows Bridge." />
+  <meta property="og:url" content="https://hudsonriver.live/" />
+  <meta property="og:image" content="https://hudsonriver.live/og.jpg" />
+  <meta property="og:image:width" content="1280" />
+  <meta property="og:image:height" content="720" />
+
+  <!-- Twitter / X Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Hudson River Live — 17th St, New York" />
+  <meta name="twitter:description" content="Live 24/7 stream overlooking Little Island, the Lower Hudson River, and New York Harbor." />
+  <meta name="twitter:image" content="https://hudsonriver.live/og.jpg" />
+
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="canonical" href="https://hudsonriver.live/" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app" id="appRoot">
+    <!-- Top Floating Glass Bar (auto-fades during idle viewing on desktop) -->
+    <header class="hud-bar" id="hudBar">
+      <div class="brand-group">
+        <div class="live-pill" id="liveBadge" title="Live broadcast status">
+          <span class="live-dot"></span>
+          <span id="liveBadgeText">LIVE</span>
+        </div>
+        <div class="brand-titles">
+          <h1 class="brand-name">Hudson River</h1>
+          <span class="brand-sub">17th St, NYC · Looking SSW 207°</span>
+        </div>
+      </div>
+
+      <!-- Live Maritime & Weather Telemetry -->
+      <div class="telemetry-strip" aria-label="Live NYC Harbor conditions">
+        <div class="telemetry-chip" title="New York Local Time">
+          <span class="chip-label">NYC</span>
+          <span class="chip-val mono" id="nycClock">--:--:--</span>
+        </div>
+        <div class="telemetry-chip" id="weatherChip" title="Live Chelsea Piers wind &amp; temperature">
+          <span class="chip-label">Weather</span>
+          <span class="chip-val mono" id="weatherVal">Loading…</span>
+        </div>
+        <div class="telemetry-chip hide-sm" id="tideChip" title="NOAA Station 8518750 (The Battery, NY) water level &amp; tide state">
+          <span class="chip-label">Tide</span>
+          <span class="chip-val mono" id="tideVal">Loading…</span>
+        </div>
+      </div>
+
+      <!-- Action Controls -->
+      <nav class="controls-group" aria-label="Stream controls">
+        <button class="hud-btn" id="btnLandmarks" type="button" aria-pressed="false" title="Toggle skyline landmark pins on wide view (L)">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+            <circle cx="12" cy="10" r="3"></circle>
+          </svg>
+          <span class="btn-label">Landmarks</span>
+        </button>
+
+        <button class="hud-btn hide-mobile" id="btnFitFill" type="button" aria-pressed="false" title="Toggle Fit vs Edge-to-Edge Cinema Fill (Z)">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+            <path d="M8 10l-3 2 3 2M16 10l3 2-3 2"></path>
+          </svg>
+          <span class="btn-label" id="fitFillLabel">Fill</span>
+        </button>
+
+        <button class="hud-btn hide-mobile" id="btnFullscreen" type="button" title="Full screen (F)">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <polyline points="9 21 3 21 3 15"></polyline>
+            <line x1="21" y1="3" x2="14" y2="10"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+          </svg>
+        </button>
+
+        <button class="hud-btn" id="btnInfo" type="button" aria-expanded="false" title="About this camera &amp; landmarks (I)">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+        </button>
+
+        <a
+          class="hud-btn hud-btn-primary"
+          id="ytWatchLink"
+          href="https://www.youtube.com/watch?v=kE_N1WY7UAY"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open on YouTube for Live Chat, 4K selection, or Smart TV casting"
+        >
+          <span>YouTube</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="7" y1="17" x2="17" y2="7"></line>
+            <polyline points="7 7 17 7 17 17"></polyline>
+          </svg>
+        </a>
+      </nav>
+    </header>
+
+    <!-- Main 16:9 Cinema Stage -->
+    <main class="stage-viewport" id="stageViewport">
+      <div class="stage-box" id="stageBox">
+        <div id="ytPlayer"></div>
+
+        <!-- Non-interactive Skyline Landmark Pins (aligned to exact 16:9 calibration) -->
+        <div class="landmarks-layer hidden" id="landmarksLayer" aria-hidden="true">
+          <div class="landmark-pin" style="left: 24.8%; top: 40.9%;">
+            <span class="pin-card"><strong>One WTC</strong> · 2.2 mi</span>
+            <span class="pin-stem" style="height: 24px;"></span>
+            <span class="pin-dot"></span>
+          </div>
+
+          <div class="landmark-pin" style="left: 28.0%; top: 66.2%;">
+            <span class="pin-card"><strong>Whitney Museum</strong> · 0.4 mi</span>
+            <span class="pin-stem" style="height: 18px;"></span>
+            <span class="pin-dot"></span>
+          </div>
+
+          <div class="landmark-pin" style="left: 33.4%; top: 57.6%;">
+            <span class="pin-card"><strong>Verrazzano Bridge</strong> · 9.8 mi</span>
+            <span class="pin-stem" style="height: 28px;"></span>
+            <span class="pin-dot"></span>
+          </div>
+
+          <div class="landmark-pin" style="left: 49.0%; top: 58.1%;">
+            <span class="pin-card"><strong>Statue of Liberty</strong> · 4.3 mi</span>
+            <span class="pin-stem" style="height: 22px;"></span>
+            <span class="pin-dot"></span>
+          </div>
+
+          <div class="landmark-pin" style="left: 59.9%; top: 52.1%;">
+            <span class="pin-card"><strong>99 Hudson (JC)</strong> · 2.6 mi</span>
+            <span class="pin-stem" style="height: 22px;"></span>
+            <span class="pin-dot"></span>
+          </div>
+
+          <div class="landmark-pin" style="left: 64.5%; top: 76.5%;">
+            <span class="pin-card"><strong>Little Island</strong> · 0.25 mi</span>
+            <span class="pin-stem" style="height: 18px;"></span>
+            <span class="pin-dot"></span>
+          </div>
+
+          <div class="landmark-pin" style="left: 77.9%; top: 62.6%;">
+            <span class="pin-card"><strong>Water’s Soul</strong> · 1.4 mi</span>
+            <span class="pin-stem" style="height: 20px;"></span>
+            <span class="pin-dot"></span>
+          </div>
+
+          <div class="landmarks-note">Wide-angle skyline calibration · Press <kbd>L</kbd> to hide</div>
+        </div>
+
+        <!-- Local file:// Warning (YouTube blocks embeds without http/https origin) -->
+        <div class="fallback-overlay hidden" id="fileProtocolNotice">
+          <div class="fallback-card">
+            <h2>Preview via Local HTTP Server</h2>
+            <p>YouTube blocks embedded players opened directly via <code>file://</code>. Run this command to preview locally:</p>
+            <pre><code>python3 -m http.server 8080 -d site/public</code></pre>
+            <p>Then open <code>http://localhost:8080</code>, or watch directly on YouTube:</p>
+            <a class="cta-link" href="https://www.youtube.com/watch?v=kE_N1WY7UAY" target="_blank" rel="noopener noreferrer">
+              Open Live Stream on YouTube ↗
+            </a>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Mobile-only Tide Bar -->
+    <footer class="mobile-footer">
+      <div class="mobile-stat">
+        <span class="chip-label">Hudson Tide (Battery)</span>
+        <span class="chip-val mono" id="tideValMobile">Loading…</span>
+      </div>
+      <div class="mobile-stat">
+        <span class="chip-label">DVR Rewind</span>
+        <span class="chip-val">Scrub back up to 12h in player</span>
+      </div>
+    </footer>
+
+    <!-- Slide-over About / Landmark Guide Drawer -->
+    <aside class="info-drawer hidden" id="infoDrawer" aria-label="About Hudson River Live">
+      <div class="drawer-header">
+        <div>
+          <p class="drawer-eyebrow">hudsonriver.live</p>
+          <h2>From 17th Street, Chelsea</h2>
+        </div>
+        <button class="drawer-close" id="btnCloseInfo" type="button" aria-label="Close panel">✕</button>
+      </div>
+
+      <p class="drawer-lead">
+        Streaming live 24/7 from 86 meters above West 17th Street in Manhattan, looking south-southwest (207°) down the Lower Hudson River across Upper New York Bay to the Narrows.
+      </p>
+
+      <div class="drawer-section">
+        <h3>What’s in View (Left → Right)</h3>
+        <ul class="landmark-list">
+          <li><span>One World Trade Center</span><span class="mono">2.2 mi · 1,776 ft</span></li>
+          <li><span>Whitney Museum &amp; Gansevoort</span><span class="mono">0.4 mi</span></li>
+          <li><span>Verrazzano-Narrows Bridge</span><span class="mono">9.8 mi · Horizon</span></li>
+          <li><span>Statue of Liberty</span><span class="mono">4.3 mi · Center</span></li>
+          <li><span>Little Island (Pier 55)</span><span class="mono">0.25 mi · Foreground</span></li>
+          <li><span>30 &amp; 99 Hudson St, Jersey City</span><span class="mono">2.6 mi · 900 ft</span></li>
+          <li><span>Water’s Soul (Newport Pier)</span><span class="mono">1.4 mi</span></li>
+        </ul>
+      </div>
+
+      <div class="drawer-section">
+        <h3>Tips &amp; Shortcuts</h3>
+        <ul class="shortcut-list">
+          <li><kbd>L</kbd> Toggle skyline landmark pins</li>
+          <li><kbd>Z</kbd> Fit 16:9 vs edge-to-edge Fill</li>
+          <li><kbd>F</kbd> Fullscreen wall-display mode</li>
+        </ul>
+        <p class="drawer-hint">
+          <strong>Missed a ship or helicopter?</strong> Hover over the bottom of the video and drag the red timeline bar left to rewind up to 12 hours, or click the gear icon to lock resolution to <strong>4K / 1440p</strong>.
+        </p>
+      </div>
+
+      <div class="drawer-footer">
+        <span>Camera by <a href="https://www.youtube.com/@craignm" target="_blank" rel="noopener noreferrer">Craig Nevill-Manning</a></span>
+        <span class="mono">40.745°N, 74.008°W</span>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

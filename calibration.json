@@ -1,0 +1,30 @@
+{
+  "camera_name": "Chelsea Window — Insta360 Link 2C Pro",
+  "lat": 40.74482298892839,
+  "lon": -74.00806308139002,
+  "alt_m": 86.0,
+  "az_deg": 207.186,
+  "tilt_deg": 3.171,
+  "roll_deg": -0.945,
+  "hfov_deg": 67.957,
+  "k1": -0.06,
+  "adsb_lead_s": 0.9,
+  "sensor_width_px": 3840,
+  "sensor_height_px": 2160,
+  "ptz_offset_east_m": 0.25,
+  "ptz_offset_north_m": 0.0,
+  "ptz_offset_up_m": 0.0,
+  "obs_url": "obs://127.0.0.1:4455",
+  "landmarks": [
+    {"name": "1 WTC Spire", "lat": 40.712743, "lon": -74.013379, "alt_m": 546.2},
+    {"name": "1 WTC Roof", "lat": 40.712743, "lon": -74.013379, "alt_m": 417.0},
+    {"name": "Verrazzano W Tower", "lat": 40.607500, "lon": -74.051944, "alt_m": 211.2},
+    {"name": "30 Hudson (GS)", "lat": 40.712760, "lon": -74.034570, "alt_m": 238.1},
+    {"name": "99 Hudson JC", "lat": 40.714580, "lon": -74.036510, "alt_m": 274.3},
+    {"name": "Urby JC", "lat": 40.720370, "lon": -74.034820, "alt_m": 217.3},
+    {"name": "Water's Soul", "lat": 40.731120, "lon": -74.028580, "alt_m": 24.0},
+    {"name": "Whitney Museum", "lat": 40.739600, "lon": -74.008900, "alt_m": 42.0},
+    {"name": "Little Island S Gate", "lat": 40.741220, "lon": -74.009750, "alt_m": 4.5},
+    {"name": "Little Island Center", "lat": 40.741940, "lon": -74.010280, "alt_m": 12.0}
+  ]
+}

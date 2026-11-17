@@ -1,0 +1,30 @@
+# Secrets & local environment
+.env
+
+# macOS & Dropbox metadata
+.DS_Store
+._*
+
+# Python bytecode & virtualenvs
+.venv/
+__pycache__/
+*.pyc
+
+# Compiled local native binaries (built from uvc_util.m)
+uvc-util
+mac_mini_cam
+
+# Runtime caches, logs & incident snapshots
+.ev_state.json
+.ais_cache.json
+mac_mini_endpoint.json
+incidents/
+*.log
+*.log.1
+*.pt
+
+# Cloudflare Worker / Vite build & dependencies
+.wrangler/
+site/.wrangler/
+site/node_modules/
+site/dist/
