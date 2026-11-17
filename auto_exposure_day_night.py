@@ -188,24 +188,32 @@ def query_insta360_usb_session_id() -> Optional[int]:
     return None
 
 
-def load_ev_cache(cache_path: Path) -> Tuple[Optional[int], Optional[float]]:
+def load_ev_cache(cache_path: Path) -> Tuple[Optional[int], Optional[float], bool]:
     try:
         if cache_path.is_file():
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             sid = data.get("session_id")
             ev = data.get("applied_ev")
+            hdr_off = bool(data.get("hdr_disabled", False))
             if sid is not None and ev is not None:
-                return int(sid), float(ev)
+                return int(sid), float(ev), hdr_off
     except Exception:
         pass
-    return None, None
+    return None, None, False
 
 
-def save_ev_cache(cache_path: Path, session_id: Optional[int], applied_ev: float, ts: str) -> None:
+def save_ev_cache(
+    cache_path: Path, session_id: Optional[int], applied_ev: float, ts: str, hdr_disabled: bool = True
+) -> None:
     if session_id is None:
         return
     try:
-        payload = {"session_id": int(session_id), "applied_ev": float(applied_ev), "updated_at": ts}
+        payload = {
+            "session_id": int(session_id),
+            "applied_ev": float(applied_ev),
+            "hdr_disabled": bool(hdr_disabled),
+            "updated_at": ts,
+        }
         cache_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     except Exception:
         pass
@@ -215,6 +223,31 @@ def run_uvc_util(uvc_bin: Path, args_list):
     cmd = [str(uvc_bin), "-V", "0x2e1a"] + args_list
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8.0)
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def ensure_hdr_disabled(uvc_bin: Path, ts: str) -> bool:
+    """
+    Ensures on-camera multi-exposure HDR (`insta360-hdr`) is disabled (0).
+    At 4K30, on-camera HDR doubles sensor readout and adds heavy ISP thermal load
+    (causing afternoon solar overheating stalls) while also fighting manual/EV exposure.
+    """
+    rc, out, _ = run_uvc_util(uvc_bin, ["-g", "insta360-hdr"])
+    if rc != 0:
+        return False
+    for line in out.splitlines():
+        if line.startswith("insta360-hdr="):
+            try:
+                cur_hdr = int(line.split("=", 1)[1].strip())
+                if cur_hdr == 0:
+                    return True
+            except ValueError:
+                pass
+    rc2, out2, err2 = run_uvc_util(uvc_bin, ["-s", "insta360-hdr=0"])
+    if rc2 == 0:
+        print(f"[{ts}] UPDATED | Disabled on-camera HDR (insta360-hdr: 1 -> 0) to reduce 4K SoC heat")
+        return True
+    print(f"[{ts}] WARN: Could not disable insta360-hdr ({err2 or out2})", file=sys.stderr)
+    return False
 
 
 def read_current_ev(uvc_bin: Path):
@@ -312,21 +345,31 @@ def main() -> int:
         return 0
 
     # Zero-USB fast path: during steady DAY (+0.00 EV) or steady NIGHT (-1.80 EV), skip
-    # spawning uvc-util entirely if the exact same USB camera sessionID already has target_ev.
+    # spawning uvc-util entirely if the exact same USB camera sessionID already has target_ev
+    # AND on-camera HDR has already been confirmed off (`hdr_disabled == True`).
     usb_session_id = query_insta360_usb_session_id()
-    if args.force_ev is None and not args.force_sync and usb_session_id is not None:
-        cached_sid, cached_ev = load_ev_cache(args.state_file)
-        if cached_sid == usb_session_id and cached_ev is not None and abs(cached_ev - target_ev) < 0.04:
-            if not args.quiet_unchanged:
-                print(
-                    f"[{ts}] CACHED-OK | Sun={elev:+.2f} deg ({phase}) | "
-                    f"session={usb_session_id} already at {cached_ev:+.2f} EV (zero USB traffic)"
-                )
-            return 0
+    cached_sid, cached_ev, cached_hdr_off = load_ev_cache(args.state_file)
+    if (
+        args.force_ev is None
+        and not args.force_sync
+        and usb_session_id is not None
+        and cached_sid == usb_session_id
+        and cached_hdr_off
+        and cached_ev is not None
+        and abs(cached_ev - target_ev) < 0.04
+    ):
+        if not args.quiet_unchanged:
+            print(
+                f"[{ts}] CACHED-OK | Sun={elev:+.2f} deg ({phase}) | "
+                f"session={usb_session_id} already at {cached_ev:+.2f} EV, HDR=off (zero USB traffic)"
+            )
+        return 0
 
     if not args.uvc_bin.is_file() or not os.access(args.uvc_bin, os.X_OK):
         print(f"[{ts}] ERROR: uvc-util binary not found or not executable at {args.uvc_bin}", file=sys.stderr)
         return 1
+
+    hdr_off = ensure_hdr_disabled(args.uvc_bin, ts)
 
     cur_ev, err = read_current_ev(args.uvc_bin)
     if cur_ev is None:
@@ -334,9 +377,9 @@ def main() -> int:
         return 1
 
     if args.force_ev is None and abs(cur_ev - target_ev) < 0.04:
-        save_ev_cache(args.state_file, usb_session_id, cur_ev, ts)
+        save_ev_cache(args.state_file, usb_session_id, cur_ev, ts, hdr_disabled=hdr_off)
         if not args.quiet_unchanged:
-            print(f"[{ts}] OK | Sun={elev:+.2f} deg ({phase}) | camera already at {cur_ev:+.2f} EV (no USB write needed)")
+            print(f"[{ts}] OK | Sun={elev:+.2f} deg ({phase}) | camera already at {cur_ev:+.2f} EV, HDR=off")
         return 0
 
     applied_ev, werr = write_target_ev(args.uvc_bin, target_ev)
@@ -344,7 +387,7 @@ def main() -> int:
         print(f"[{ts}] ERROR: Failed setting EV to {target_ev:+.2f} ({werr})", file=sys.stderr)
         return 1
 
-    save_ev_cache(args.state_file, usb_session_id, applied_ev, ts)
+    save_ev_cache(args.state_file, usb_session_id, applied_ev, ts, hdr_disabled=hdr_off)
     print(
         f"[{ts}] UPDATED | Sun={elev:+.2f} deg ({phase}) | "
         f"exposure-comp-ev: {cur_ev:+.2f} EV -> {applied_ev:+.2f} EV"

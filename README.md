@@ -60,14 +60,15 @@ flowchart LR
   - `http://localhost:8765/?hud=1` — **Zero-Copy OBS AR HUD:** Transparent 60 fps HTML5 Canvas overlay composited directly over OBS's native 4K camera source.
   - `http://localhost:8765/?obs=1` — **Virtual 4K PTZ View:** Critically damped spring-damper digital zoom + broadcast lower-third chyron.
 - **Cooperative Solar UVC Exposure Scheduler ([auto_exposure_day_night.py](auto_exposure_day_night.py), [uvc_util.m](uvc_util.m)):**
-  - Computes solar elevation (NOAA/Meeus atmospheric refraction model) to hold `+0.00 EV` throughout daytime/sunset, smoothly ramp `0.00 -> -1.80 EV` across civil twilight (`-1°` to `-6°`), and hold `-1.80 EV` overnight so pier floodlights never bloom.
-  - Communicates cooperatively over USB Endpoint 0 (Insta360 Extension Unit 9, Selector `0x09`) without opening `AVCaptureSession`, and caches the kernel `IORegistry` USB `sessionID` so steady day/night ticks generate **zero USB bus traffic**.
-- **24/7 Freeze Monitor & 2-Stage Hardware USB Recovery ([obs_freeze_monitor.py](obs_freeze_monitor.py)):**
-  - Captures tiny `160x90` lossless PNGs directly from OBS's raw `macos-avcapture` source every 20s (bypassing clock/HUD overlays) and decodes RGB pixels in pure Python to compute Mean Absolute Difference (`MAD`).
+  - Computes solar elevation (NOAA/Meeus atmospheric refraction model) to hold `+0.00 EV` throughout daytime/sunset, smoothly ramp `0.00 -> -1.80 EV` across civil twilight (`-1°` to `-6°`), and hold `-1.80 EV` overnight so pier floodlights never bloom, while keeping on-camera multi-exposure HDR disabled (`insta360-hdr=0`) to reduce ISP heat and prevent exposure fighting.
+  - Communicates cooperatively over USB Endpoint 0 (Insta360 Extension Unit 9) without opening `AVCaptureSession`, and caches the kernel `IORegistry` USB `sessionID` so steady day/night ticks generate **zero USB bus traffic**.
+- **24/7 Freeze Monitor, Thermal Step-Down & 2-Stage USB Recovery ([obs_freeze_monitor.py](obs_freeze_monitor.py)):**
+  - Captures tiny `160x90` lossless PNGs directly from OBS's raw `macos-avcapture` source every 10s (bypassing clock/HUD overlays) and decodes RGB pixels in pure Python to compute Mean Absolute Difference (`MAD`).
   - Enforces explicit `3840x2160 @ 30 fps MJPEG` (`NV12 / 420v`, `30000030/1000000`) in OBS so macOS `UVCAssistant` never falls into the buggy `H264` UVC mode.
-  - Sends instant push notifications (with inline JPEG snapshots) via `ntfy.sh` and runs a 2-stage auto-recovery:
+  - Runs a quiet-first 2-stage auto-recovery (~30s detection -> ~5s heal) with rate-limited `ntfy.sh` summaries and immediate urgent alerts if recovery ever fails:
     1. **Stage 1:** Soft-cycles OBS's `AVCaptureSession` (`device: ""` -> restore).
-    2. **Stage 2:** If the camera's USB bulk pipe (`0x81`) is hardware-stalled (`IOUSBHostErrorDomain -536870163`), escalates to `uvc-util --usb-reset` (`IOKit` `USBDeviceReEnumerate`), simulating a physical USB unplug/replug in software.
+    2. **Stage 2:** If the camera's USB bulk pipe (`0x81`) is hardware-stalled, escalates to `uvc-util --usb-reset` (`IOKit` `USBDeviceReEnumerate`), polling up to ~26s across firmware reboot.
+    3. **Afternoon Solar Thermal Step-Down:** If ≥3 stalls occur within 20 minutes under direct afternoon window sunlight, automatically steps the camera down to `1080p30 MJPEG` (scaled seamlessly to fill the 4K canvas) for 60 minutes to cool the sensor before restoring native `4K30 MJPEG`.
 - **Public Website on Cloudflare Workers ([site/](site/)):**
   - Serves `hudsonriver.live` and dynamically resolves the active YouTube Live broadcast ID via `/api/live` (edge-cached YouTube Atom feed parser using `HTMLRewriter`).
 
@@ -144,6 +145,8 @@ On the dedicated headless Apple Silicon Mac mini, six `launchd` user agents keep
    - On macOS, `H264` (`Use Preset`) stalls every 4–16 minutes and can wedge bulk endpoint `0x81`, whereas explicit `3840x2160 @ 30 fps` `NV12 (420v)` (`MJPEG`, `frame_rate: 30000030/1000000`) streams 24/7 with zero stalls. [obs_freeze_monitor.py](obs_freeze_monitor.py) enforces this setting automatically.
 2. **Headless macOS OBS Rendering Lag (App Nap):**
    - Without an attached display, macOS throttles OBS's background Metal render loop (~31% missed frames). Running `caffeinate -di` via `launchd` plus `defaults write com.obsproject.obs-studio NSAppSleepDisabled -bool YES` eliminates headless render lag (`0.00%` missed frames).
+3. **West-Facing Window Solar Heating & On-Camera 4K HDR:**
+   - Direct afternoon sunlight through window glass heats the matte-black aluminum camera housing; leaving on-camera dual-exposure HDR enabled (`insta360-hdr=1`) at 4K30 adds substantial ISP thermal load and can cause thermal pauses. Keeping `insta360-hdr=0` plus automatic 60-minute `1080p30 MJPEG` thermal step-down keeps the broadcast uninterrupted through peak sun.
 
 ---
 

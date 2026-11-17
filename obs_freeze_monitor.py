@@ -30,7 +30,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 
@@ -468,11 +468,58 @@ INSTA360_4K30_MJPEG_SETTINGS = {
     "frame_rate": {"numerator": 30000030, "denominator": 1000000},
 }
 
+INSTA360_1080P30_MJPEG_SETTINGS = {
+    "use_preset": False,
+    "supported_format": "MTkyMHgxMDgwIDI0LjAwMC0yNC4wMDAyNS4wMDAtMjUuMDAwMzAuMDAwLTMwLjAwMDUwLjAwMC01MC4wMDA2MC4wMDAtNjAuMDAwIDIgODc1NzA0NDM4",
+    "resolution": '{"width":1920,"height":1080}',
+    "input_format": 875704438,
+    "color_space": 2,
+    "video_range": 1,
+    "frame_rate": {"numerator": 30000030, "denominator": 1000000},
+}
 
-def ensure_insta360_mjpeg_locked(obs: OBSSession, cam_name: str, logger: MonitorLogger) -> None:
+
+def ensure_scene_item_4k_bounds(obs: OBSSession, cam_name: str) -> None:
     """
-    Ensures Insta360 Link 2C Pro in OBS is locked to explicit 4K30 MJPEG (NV12/420v, formatIndex 2)
-    rather than Use Preset (which silently falls into buggy H264 formatIndex 1 on soft resets/restarts).
+    Ensures the camera scene item uses OBS_BOUNDS_SCALE_INNER (3840x2160) so temporary
+    1080p30 thermal step-downs fill the full 4K broadcast canvas with zero layout shift.
+    """
+    scene = obs.rpc("GetCurrentProgramScene", check=False).get("currentProgramSceneName") or "Scene"
+    items = obs.rpc("GetSceneItemList", {"sceneName": scene}, check=False).get("sceneItems") or []
+    for it in items:
+        if it.get("sourceName") == cam_name:
+            item_id = it.get("sceneItemId")
+            tf = (
+                obs.rpc("GetSceneItemTransform", {"sceneName": scene, "sceneItemId": item_id}, check=False).get(
+                    "sceneItemTransform"
+                )
+                or {}
+            )
+            if tf.get("boundsType") != "OBS_BOUNDS_SCALE_INNER" or float(tf.get("boundsWidth") or 0) < 3840.0:
+                obs.rpc(
+                    "SetSceneItemTransform",
+                    {
+                        "sceneName": scene,
+                        "sceneItemId": item_id,
+                        "sceneItemTransform": {
+                            "positionX": 0.0,
+                            "positionY": 0.0,
+                            "boundsType": "OBS_BOUNDS_SCALE_INNER",
+                            "boundsWidth": 3840.0,
+                            "boundsHeight": 2160.0,
+                        },
+                    },
+                    check=False,
+                )
+
+
+def ensure_insta360_mjpeg_locked(
+    obs: OBSSession, cam_name: str, logger: MonitorLogger, target_mode: str = "4k30"
+) -> None:
+    """
+    Ensures Insta360 Link 2C Pro in OBS is locked to explicit MJPEG (NV12/420v, formatIndex 2)
+    at either '4k30' (normal) or '1080p30' (temporary afternoon solar thermal cooldown),
+    avoiding Use Preset (which silently falls into buggy H264 formatIndex 1).
     """
     if not cam_name:
         return
@@ -481,16 +528,19 @@ def ensure_insta360_mjpeg_locked(obs: OBSSession, cam_name: str, logger: Monitor
     dev_name = str(cur.get("device_name") or "")
     if "2e1a" not in dev.lower() and "insta360 link 2" not in dev_name.lower():
         return
+    target_cfg = INSTA360_1080P30_MJPEG_SETTINGS if target_mode == "1080p30" else INSTA360_4K30_MJPEG_SETTINGS
+    label = "1080p30 MJPEG (thermal cooldown)" if target_mode == "1080p30" else "4K30 MJPEG"
     if (
         cur.get("use_preset") is False
         and cur.get("input_format") == 875704438
-        and cur.get("supported_format") == INSTA360_4K30_MJPEG_SETTINGS["supported_format"]
+        and cur.get("supported_format") == target_cfg["supported_format"]
     ):
         return
+    ensure_scene_item_4k_bounds(obs, cam_name)
     merged = dict(cur)
-    merged.update(INSTA360_4K30_MJPEG_SETTINGS)
+    merged.update(target_cfg)
     obs.rpc("SetInputSettings", {"inputName": cam_name, "inputSettings": merged, "overlay": False}, check=False)
-    logger.info(f"Locked '{cam_name}' ({dev_name or dev}) to explicit 4K30 MJPEG (NV12/420v, 30fps)")
+    logger.info(f"Locked '{cam_name}' ({dev_name or dev}) to explicit {label} (NV12/420v, 30fps)")
 
 
 def discover_camera_input(obs: OBSSession, explicit_name: str = "") -> str:
@@ -571,7 +621,7 @@ def run_monitor_loop(args, logger: MonitorLogger):
     logger.info(
         f"Starting 24/7 OBS Freeze Monitor -> obs={args.obs_url}, ntfy={args.ntfy_server}/{args.ntfy_topic}, "
         f"interval={args.interval}s, threshold=MAD<{args.mad_threshold} x{args.frozen_checks} checks, "
-        f"auto_reset={not args.alert_only}"
+        f"auto_reset={not args.alert_only}, thermal_stepdown={not args.no_thermal_stepdown}"
     )
 
     obs: Optional[OBSSession] = None
@@ -581,8 +631,12 @@ def run_monitor_loop(args, logger: MonitorLogger):
     prev_sha256: str = ""
     frozen_streak = 0
     blackout_streak = 0
-    reset_cooldown = 300.0
+    reset_cooldown = 20.0
     last_reset_ts = 0.0
+
+    thermal_cooldown_until: float = 0.0
+    recent_stall_ts: List[float] = []
+    last_auto_heal_notify_ts: float = 0.0
 
     obs_down_streak = 0
     obs_down_alerted = False
@@ -633,7 +687,11 @@ def run_monitor_loop(args, logger: MonitorLogger):
                         logger.info(f"Restored pending device '{p_dev}' on '{p_cam}'")
                     pending_restore = None
 
-                ensure_insta360_mjpeg_locked(obs, discover_camera_input(obs, args.camera_input), logger)
+                init_mode = "1080p30" if time.time() < thermal_cooldown_until else "4k30"
+                ensure_insta360_mjpeg_locked(
+                    obs, discover_camera_input(obs, args.camera_input), logger, target_mode=init_mode
+                )
+                resync_uvc_exposure()
 
             stats = obs.rpc("GetStats", check=False)
             stream = obs.rpc("GetStreamStatus", check=False)
@@ -644,6 +702,32 @@ def run_monitor_loop(args, logger: MonitorLogger):
             r_tot = int(stats.get("renderTotalFrames") or 0)
             live = bool(stream.get("outputActive", False))
             reconnecting = bool(stream.get("outputReconnecting", False))
+
+            # 0. Restore native 4K30 MJPEG once an afternoon solar thermal cooldown expires
+            now = time.time()
+            if thermal_cooldown_until > 0.0 and now >= thermal_cooldown_until and cam_name:
+                thermal_cooldown_until = 0.0
+                recent_stall_ts.clear()
+                ensure_insta360_mjpeg_locked(obs, cam_name, logger, target_mode="4k30")
+                resync_uvc_exposure()
+                time.sleep(2.5)
+                restored_jpg = grab_source_image(obs, cam_name, "jpg", 640, 360, 82)
+                prev_rgb = None
+                prev_sha256 = ""
+                frozen_streak = 0
+                blackout_streak = 0
+                logger.info(f"Thermal cooldown complete on '{cam_name}'; restored native 4K30 MJPEG.")
+                send_ntfy(
+                    args.ntfy_server,
+                    args.ntfy_topic,
+                    "Hudson Camera Restored to 4K30",
+                    f"Thermal cooldown finished; '{cam_name}' is back at native 3840x2160 @ 30 fps MJPEG.",
+                    priority=2,
+                    tags="sunny,movie_camera",
+                    jpeg_bytes=restored_jpg or None,
+                    filename="restored_4k30.jpg",
+                    logger=logger,
+                )
 
             # 1. Monitor YouTube Live stream continuity
             if live:
@@ -736,7 +820,7 @@ def run_monitor_loop(args, logger: MonitorLogger):
                                     )
                                 frozen_streak = 0
                                 if not is_blackout:
-                                    reset_cooldown = 300.0
+                                    reset_cooldown = 20.0
 
                         prev_rgb = cur_rgb
                         prev_sha256 = cur_sha
@@ -744,8 +828,9 @@ def run_monitor_loop(args, logger: MonitorLogger):
                         # Periodic quiet hourly heartbeat in local monitor.log
                         if (now - last_heartbeat_log_ts) >= 3600.0:
                             last_heartbeat_log_ts = now
+                            cur_mode = "1080p30-cooldown" if now < thermal_cooldown_until else "4k30"
                             logger.info(
-                                f"Heartbeat OK: cam='{cam_name}' MAD={mad:.2f} mean_rgb={mean_lvl:.1f} "
+                                f"Heartbeat OK: cam='{cam_name}' ({cur_mode}) MAD={mad:.2f} mean_rgb={mean_lvl:.1f} "
                                 f"fps={fps:.2f} render_skip={r_skip}/{r_tot} live={live}"
                             )
 
@@ -766,34 +851,35 @@ def run_monitor_loop(args, logger: MonitorLogger):
                             snap_jpg = grab_source_image(obs, cam_name, "jpg", 640, 360, 82)
                             saved_path = logger.save_incident_image("frozen", snap_jpg)
                             logger.info(f"INCIDENT on '{cam_name}': {trigger_reason} (saved={saved_path})")
+                            lag_total_pct = 100.0 * r_skip / max(1, r_tot)
 
-                            action_note = (
-                                "Alert-only mode enabled (leaving camera untouched)."
-                                if args.alert_only
-                                else f"Auto-resetting '{cam_name}' in OBS now..."
-                            )
-                            lag_total_pct = (100.0 * r_skip / max(1, r_tot))
-                            send_ntfy(
-                                args.ntfy_server,
-                                args.ntfy_topic,
-                                "Hudson Camera FROZEN",
-                                (
-                                    f"'{cam_name}': {trigger_reason}.\n"
-                                    f"OBS: {fps:.1f} FPS | Cumulative lag: {lag_total_pct:.2f}% | "
-                                    f"YouTube: {'LIVE' if live else 'OFF'}\n"
-                                    f"{action_note}"
-                                ),
-                                priority=5,
-                                tags="rotating_light,movie_camera",
-                                jpeg_bytes=snap_jpg or None,
-                                filename="frozen_frame.jpg",
-                                logger=logger,
-                            )
-
-                            if not args.alert_only:
+                            if args.alert_only:
+                                send_ntfy(
+                                    args.ntfy_server,
+                                    args.ntfy_topic,
+                                    "Hudson Camera FROZEN",
+                                    (
+                                        f"'{cam_name}': {trigger_reason}.\n"
+                                        f"OBS: {fps:.1f} FPS | Cumulative lag: {lag_total_pct:.2f}% | "
+                                        f"YouTube: {'LIVE' if live else 'OFF'}\n"
+                                        f"Alert-only mode enabled (leaving camera untouched)."
+                                    ),
+                                    priority=5,
+                                    tags="rotating_light,movie_camera",
+                                    jpeg_bytes=snap_jpg or None,
+                                    filename="frozen_frame.jpg",
+                                    logger=logger,
+                                )
+                                reset_cooldown = (
+                                    120.0 if reset_cooldown < 120.0 else min(1800.0, reset_cooldown * 2.0)
+                                )
+                                frozen_streak = 0
+                                blackout_streak = 0
+                            else:
                                 s_resp = obs.rpc("GetInputSettings", {"inputName": cam_name}, check=False)
                                 orig_dev = (s_resp.get("inputSettings") or {}).get("device") or ""
                                 if orig_dev:
+                                    # Stage 1: Soft OBS AVCaptureSession cycle (~5.5s)
                                     pending_restore = (cam_name, orig_dev)
                                     try:
                                         obs.rpc(
@@ -834,13 +920,16 @@ def run_monitor_loop(args, logger: MonitorLogger):
                                     recovery_method = "OBS AVCaptureSession cycle"
 
                                     # Stage 2 Escalation: If soft OBS cycle failed (USB bulk endpoint hardware STALL),
-                                    # perform programmatic IOKit USBDeviceReEnumerate (software unplug/replug)!
+                                    # perform programmatic IOKit USBDeviceReEnumerate (software unplug/replug).
+                                    # Insta360 Link 2C Pro firmware takes ~16-18s to reboot out of black frames,
+                                    # so poll up to ~26s total before declaring failure.
                                     if not recovered:
                                         uvc_bin = find_uvc_util_bin(args.data_dir)
                                         if uvc_bin is not None:
                                             logger.info(
-                                                f"Soft reset did not clear stall (MAD={post_mad:.4f}/255); "
-                                                f"escalating to IOKit USB re-enumeration via {uvc_bin}..."
+                                                f"Soft reset did not clear stall (MAD={post_mad:.4f}/255, "
+                                                f"mean_rgb={post_mean:.2f}); escalating to IOKit USB re-enumeration "
+                                                f"via {uvc_bin}..."
                                             )
                                             pending_restore = (cam_name, orig_dev)
                                             rebound_dev = orig_dev
@@ -865,7 +954,7 @@ def run_monitor_loop(args, logger: MonitorLogger):
                                                 logger.info(
                                                     f"uvc-util --usb-reset rc={proc.returncode}: {out_msg}"
                                                 )
-                                                time.sleep(5.5)
+                                                time.sleep(8.0)
                                                 rebound_dev = discover_insta360_device_id(obs, cam_name, orig_dev)
                                             except Exception as usb_exc:
                                                 logger.info(f"WARNING: USB re-enumeration error: {usb_exc}")
@@ -881,44 +970,124 @@ def run_monitor_loop(args, logger: MonitorLogger):
                                                 )
                                                 pending_restore = None
 
-                                            time.sleep(5.0)
-                                            resync_uvc_exposure()
-                                            v1 = decode_png_rgb_bytes(grab_source_image(obs, cam_name, "png", 160, 90))
-                                            time.sleep(1.0)
-                                            v2_png = grab_source_image(obs, cam_name, "png", 160, 90)
-                                            v2 = decode_png_rgb_bytes(v2_png)
-                                            post_mad, post_chg = compute_rgb_diff(v1, v2)
-                                            post_mean, post_max = compute_rgb_levels(v2)
+                                            recovery_method = "IOKit USB bus re-enumeration (software replug)"
+                                            for poll_idx in range(6):
+                                                time.sleep(2.5)
+                                                fresh_dev = discover_insta360_device_id(obs, cam_name, rebound_dev)
+                                                if fresh_dev and fresh_dev != rebound_dev:
+                                                    rebound_dev = fresh_dev
+                                                    obs.rpc(
+                                                        "SetInputSettings",
+                                                        {
+                                                            "inputName": cam_name,
+                                                            "inputSettings": {"device": rebound_dev},
+                                                            "overlay": True,
+                                                        },
+                                                        check=False,
+                                                    )
+                                                    time.sleep(1.5)
+                                                resync_uvc_exposure()
+                                                v1 = decode_png_rgb_bytes(
+                                                    grab_source_image(obs, cam_name, "png", 160, 90)
+                                                )
+                                                time.sleep(1.0)
+                                                v2_png = grab_source_image(obs, cam_name, "png", 160, 90)
+                                                v2 = decode_png_rgb_bytes(v2_png)
+                                                post_mad, post_chg = compute_rgb_diff(v1, v2)
+                                                post_mean, post_max = compute_rgb_levels(v2)
+                                                recovered = post_mad >= args.mad_threshold and not (
+                                                    post_mean < 0.8 and post_max <= 2
+                                                )
+                                                logger.info(
+                                                    f"Post-USB-reset check #{poll_idx + 1}/6: "
+                                                    f"MAD={post_mad:.3f}/255, mean_rgb={post_mean:.2f}, "
+                                                    f"recovered={recovered}"
+                                                )
+                                                if recovered:
+                                                    break
+
                                             after_jpg = grab_source_image(obs, cam_name, "jpg", 640, 360, 82)
                                             logger.save_incident_image("after_usb_reset", after_jpg)
-                                            recovered = post_mad >= args.mad_threshold and not (
-                                                post_mean < 0.8 and post_max <= 2
-                                            )
-                                            recovery_method = "IOKit USB bus re-enumeration (software replug)"
 
+                                    heal_finished = time.time()
                                     if recovered:
+                                        reset_cooldown = 20.0
                                         logger.info(
                                             f"RECOVERY VERIFIED on '{cam_name}' ({recovery_method}): "
                                             f"MAD={post_mad:.3f}/255 ({post_chg:.1f}% changed)"
                                         )
-                                        send_ntfy(
-                                            args.ntfy_server,
-                                            args.ntfy_topic,
-                                            "Hudson Camera RECOVERED",
-                                            (
-                                                f"Auto-recovery of '{cam_name}' succeeded via {recovery_method}!\n"
-                                                f"Live pixel motion verified: MAD={post_mad:.2f}/255 "
-                                                f"({post_chg:.1f}% pixels changing)."
-                                            ),
-                                            priority=3,
-                                            tags="white_check_mark,movie_camera",
-                                            jpeg_bytes=after_jpg or None,
-                                            filename="recovered_frame.jpg",
-                                            logger=logger,
-                                        )
-                                        reset_cooldown = 300.0
+                                        recent_stall_ts = [
+                                            t for t in recent_stall_ts if (heal_finished - t) <= args.thermal_window_s
+                                        ]
+                                        recent_stall_ts.append(heal_finished)
+
+                                        # Automatic sunny-afternoon thermal step-down (4K30 -> 1080p30 MJPEG)
+                                        if (
+                                            not args.no_thermal_stepdown
+                                            and thermal_cooldown_until == 0.0
+                                            and len(recent_stall_ts) >= args.thermal_stall_count
+                                        ):
+                                            thermal_cooldown_until = heal_finished + args.thermal_cooldown_s
+                                            cooldown_min = int(round(args.thermal_cooldown_s / 60.0))
+                                            window_min = int(round(args.thermal_window_s / 60.0))
+                                            ensure_insta360_mjpeg_locked(
+                                                obs, cam_name, logger, target_mode="1080p30"
+                                            )
+                                            resync_uvc_exposure()
+                                            time.sleep(2.5)
+                                            v2_png = grab_source_image(obs, cam_name, "png", 160, 90)
+                                            v2 = decode_png_rgb_bytes(v2_png)
+                                            after_jpg = grab_source_image(obs, cam_name, "jpg", 640, 360, 82)
+                                            logger.info(
+                                                f"THERMAL STEP-DOWN activated on '{cam_name}': "
+                                                f"{len(recent_stall_ts)} stalls in <= {window_min}m -> "
+                                                f"running 1080p30 MJPEG (scaled to 4K) for {cooldown_min}m."
+                                            )
+                                            send_ntfy(
+                                                args.ntfy_server,
+                                                args.ntfy_topic,
+                                                "Hudson Camera Thermal Step-Down (1080p30)",
+                                                (
+                                                    f"'{cam_name}' stalled {len(recent_stall_ts)} times within "
+                                                    f"{window_min} min (afternoon window sun/heat) and auto-recovered "
+                                                    f"via {recovery_method}.\n"
+                                                    f"Stepped camera down to 1080p30 MJPEG (scaled seamlessly to 4K) "
+                                                    f"for {cooldown_min} min to cool the sensor; will restore 4K30 "
+                                                    f"automatically."
+                                                ),
+                                                priority=3,
+                                                tags="thermometer,sunny,movie_camera",
+                                                jpeg_bytes=after_jpg or None,
+                                                filename="thermal_stepdown_1080p.jpg",
+                                                logger=logger,
+                                            )
+                                            last_auto_heal_notify_ts = heal_finished
+                                        elif (
+                                            heal_finished - last_auto_heal_notify_ts
+                                        ) >= args.auto_heal_notify_cooldown:
+                                            last_auto_heal_notify_ts = heal_finished
+                                            quiet_min = int(round(args.auto_heal_notify_cooldown / 60.0))
+                                            send_ntfy(
+                                                args.ntfy_server,
+                                                args.ntfy_topic,
+                                                "Hudson Camera Auto-Healed",
+                                                (
+                                                    f"'{cam_name}' ({trigger_reason}) auto-recovered via "
+                                                    f"{recovery_method} (MAD={post_mad:.2f}/255).\n"
+                                                    f"Routine auto-heal notices are rate-limited to 1 per {quiet_min}m."
+                                                ),
+                                                priority=2,
+                                                tags="wrench,white_check_mark",
+                                                jpeg_bytes=after_jpg or None,
+                                                filename="recovered_frame.jpg",
+                                                logger=logger,
+                                            )
                                     else:
-                                        reset_cooldown = min(1800.0, reset_cooldown * 2.0)
+                                        reset_cooldown = (
+                                            120.0
+                                            if reset_cooldown < 120.0
+                                            else min(1800.0, reset_cooldown * 2.0)
+                                        )
                                         logger.info(
                                             f"WARNING: Camera '{cam_name}' still appears stuck after {recovery_method} "
                                             f"(MAD={post_mad:.4f}/255, next retry in {int(reset_cooldown)}s)"
@@ -926,28 +1095,24 @@ def run_monitor_loop(args, logger: MonitorLogger):
                                         send_ntfy(
                                             args.ntfy_server,
                                             args.ntfy_topic,
-                                            "Hudson Camera STILL FROZEN After USB Reset",
+                                            "Hudson Camera STILL FROZEN — Needs Check",
                                             (
-                                                f"Tried soft OBS reset + IOKit USB re-enumeration on '{cam_name}', "
+                                                f"'{cam_name}': {trigger_reason}.\n"
+                                                f"Tried soft OBS reset + IOKit USB re-enumeration, "
                                                 f"but diff is still MAD={post_mad:.4f}/255 (mean_rgb={post_mean:.1f}).\n"
-                                                f"Camera may need a physical power cycle. Next auto-retry in "
-                                                f"{int(reset_cooldown // 60)} min."
+                                                f"Next auto-retry in {max(1, int(round(reset_cooldown / 60.0)))} min."
                                             ),
                                             priority=5,
-                                            tags="sos,warning",
+                                            tags="sos,rotating_light",
                                             jpeg_bytes=after_jpg or None,
                                             filename="still_frozen.jpg",
                                             logger=logger,
                                         )
 
-                                    prev_rgb = v2
-                                    prev_sha256 = hashlib.sha256(v2_png).hexdigest()
+                                    prev_rgb = v2 if v2 else None
+                                    prev_sha256 = hashlib.sha256(v2_png).hexdigest() if v2_png else ""
                                     frozen_streak = 0
                                     blackout_streak = 0
-                            else:
-                                reset_cooldown = min(1800.0, reset_cooldown * 2.0)
-                                frozen_streak = 0
-                                blackout_streak = 0
                 else:
                     prev_rgb = None
                     prev_sha256 = ""
@@ -991,9 +1156,14 @@ def main():
     parser.add_argument("--ntfy-topic", default=DEFAULT_NTFY_TOPIC, help="Private ntfy.sh topic name")
     parser.add_argument("--ntfy-server", default=DEFAULT_NTFY_SERVER, help="ntfy server URL (default: https://ntfy.sh)")
     parser.add_argument("--camera-input", default="", help="Explicit OBS camera input name (auto-discovers macos-avcapture if empty)")
-    parser.add_argument("--interval", type=float, default=20.0, help="Seconds between frame diff checks (default: 20)")
-    parser.add_argument("--frozen-checks", type=int, default=3, help="Consecutive static checks before alerting (default: 3 = ~60s)")
+    parser.add_argument("--interval", type=float, default=10.0, help="Seconds between frame diff checks (default: 10)")
+    parser.add_argument("--frozen-checks", type=int, default=3, help="Consecutive static checks before recovery (default: 3 = ~30s)")
     parser.add_argument("--mad-threshold", type=float, default=0.05, help="Mean absolute RGB diff (0..255) below which frames count as frozen (default: 0.05)")
+    parser.add_argument("--auto-heal-notify-cooldown", type=float, default=1800.0, help="Min seconds between routine low-priority auto-heal ntfy notices (default: 1800 = 30m)")
+    parser.add_argument("--thermal-stall-count", type=int, default=3, help="Stalls within thermal window that trigger temporary 1080p30 cooldown (default: 3)")
+    parser.add_argument("--thermal-window-s", type=float, default=1200.0, help="Rolling window in seconds for counting repeated solar/thermal stalls (default: 1200 = 20m)")
+    parser.add_argument("--thermal-cooldown-s", type=float, default=3600.0, help="Seconds to hold 1080p30 MJPEG before restoring native 4K30 (default: 3600 = 60m)")
+    parser.add_argument("--no-thermal-stepdown", action="store_true", help="Disable automatic 4K30 -> 1080p30 thermal step-down on repeated stalls")
     parser.add_argument("--alert-only", action="store_true", help="Only send ntfy alerts; do not auto-reset OBS camera input")
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR, help="Directory for logs and incident snapshots")
     parser.add_argument("--test-alert", action="store_true", help="Send a live test push notification with snapshot and exit")
