@@ -55,6 +55,9 @@ BASE_BRIGHTNESS = 50
 BASE_CONTRAST = 50
 BASE_SATURATION = 56
 
+# Calibrated 4K optical infinity focus position through the Hudson window (`0..100`, `auto-focus=0`)
+DEFAULT_INFINITY_FOCUS = 86
+
 DEHAZE_MAX_EV_DELTA = -0.36
 DEHAZE_MIN_BRIGHTNESS = 44
 DEHAZE_MAX_CONTRAST = 62
@@ -527,6 +530,7 @@ def save_ev_cache(
     dehaze_strength: float,
     ts: str,
     hdr_disabled: bool = True,
+    focus_locked: Optional[int] = DEFAULT_INFINITY_FOCUS,
 ) -> None:
     if session_id is None:
         return
@@ -539,6 +543,7 @@ def save_ev_cache(
             "applied_saturation": int(sat),
             "dehaze_strength": round(float(dehaze_strength), 3),
             "hdr_disabled": bool(hdr_disabled),
+            "focus_locked": focus_locked,
             "updated_at": ts,
         }
         cache_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -569,6 +574,41 @@ def ensure_hdr_disabled(uvc_bin: Path, ts: str) -> bool:
         return True
     print(f"[{ts}] WARN: Could not disable insta360-hdr ({err2 or out2})", file=sys.stderr)
     return False
+
+
+def ensure_infinity_focus_locked(uvc_bin: Path, target_focus: int, ts: str) -> Optional[int]:
+    """
+    Ensures manual optical infinity focus (`auto-focus=0`, `focus-abs=target_focus`) is locked
+    so window reflections/glare never pull autofocus off infinity across power cycles.
+    """
+    if target_focus < 0:
+        return None
+    rc, out, _ = run_uvc_util(uvc_bin, ["-g", "auto-focus", "-g", "focus-abs"])
+    cur_af = None
+    cur_f = None
+    if rc == 0:
+        for line in out.splitlines():
+            if line.startswith("auto-focus="):
+                try:
+                    cur_af = int(line.split("=", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("focus-abs="):
+                try:
+                    cur_f = int(line.split("=", 1)[1].strip())
+                except ValueError:
+                    pass
+        if cur_af == 0 and cur_f == target_focus:
+            return target_focus
+
+    rc2, out2, err2 = run_uvc_util(uvc_bin, ["-s", "auto-focus=0", "-s", f"focus-abs={target_focus}"])
+    if rc2 == 0:
+        print(
+            f"[{ts}] UPDATED | Locked manual infinity focus (auto-focus={cur_af}->0, focus-abs={cur_f}->{target_focus})"
+        )
+        return target_focus
+    print(f"[{ts}] WARN: Could not lock focus-abs={target_focus} ({err2 or out2})", file=sys.stderr)
+    return None
 
 
 def read_current_isp(uvc_bin: Path) -> Tuple[Optional[dict], Optional[str]]:
@@ -664,6 +704,7 @@ def main() -> int:
     parser.add_argument("--ramp-start-deg", type=float, default=DEFAULT_RAMP_START_DEG, help="Solar elevation to start dusk ramp (default: -1.0 deg)")
     parser.add_argument("--ramp-end-deg", type=float, default=DEFAULT_RAMP_END_DEG, help="Solar elevation to finish dusk ramp (default: -6.0 deg)")
     parser.add_argument("--no-dehaze", action="store_true", help="Disable midday solar window glare dehazing")
+    parser.add_argument("--focus-abs", type=int, default=DEFAULT_INFINITY_FOCUS, help="Manual optical infinity focus register 0..100 to lock (-1 to skip, default: 86)")
     parser.add_argument("--force-ev", type=float, default=None, help="Immediately set a specific EV (-3.0 to +3.0) with baseline ISP and exit")
     parser.add_argument("--force-sync", action="store_true", help="Bypass sessionID cache and verify/re-apply ISP over USB")
     parser.add_argument("--state-file", type=Path, default=base_dir / ".ev_state.json", help="Path to cached USB sessionID + ISP state")
@@ -734,6 +775,8 @@ def main() -> int:
     cached_con = cache.get("applied_contrast")
     cached_sat = cache.get("applied_saturation")
     cached_hdr_off = bool(cache.get("hdr_disabled", False))
+    cached_focus = cache.get("focus_locked")
+    want_focus = args.focus_abs if args.focus_abs >= 0 else None
 
     if (
         args.force_ev is None
@@ -741,6 +784,7 @@ def main() -> int:
         and usb_session_id is not None
         and cached_sid == usb_session_id
         and cached_hdr_off
+        and cached_focus == want_focus
         and cached_ev is not None
         and abs(float(cached_ev) - target_ev) < 0.04
         and cached_bri == target_bri
@@ -751,13 +795,13 @@ def main() -> int:
         if abs(dehaze_strength - prev_strength) > 1e-3:
             save_ev_cache(
                 args.state_file, usb_session_id, float(cached_ev), target_bri, target_con, target_sat,
-                dehaze_strength, ts, hdr_disabled=True
+                dehaze_strength, ts, hdr_disabled=True, focus_locked=want_focus
             )
         if not args.quiet_unchanged:
             print(
                 f"[{ts}] CACHED-OK | Sun={elev:+.2f} deg az={sun_az:.1f} ({phase}){glare_diag} | "
                 f"session={usb_session_id} already at {float(cached_ev):+.2f} EV, "
-                f"B={target_bri}, C={target_con}, S={target_sat}, HDR=off (zero USB traffic)"
+                f"B={target_bri}, C={target_con}, S={target_sat}, focus={want_focus}, HDR=off (zero USB traffic)"
             )
         return 0
 
@@ -766,6 +810,7 @@ def main() -> int:
         return 1
 
     hdr_off = ensure_hdr_disabled(args.uvc_bin, ts)
+    focus_locked = ensure_infinity_focus_locked(args.uvc_bin, args.focus_abs, ts)
 
     cur_isp, err = read_current_isp(args.uvc_bin)
     if cur_isp is None:
@@ -786,12 +831,13 @@ def main() -> int:
     ):
         save_ev_cache(
             args.state_file, usb_session_id, cur_ev, cur_bri, cur_con, cur_sat,
-            dehaze_strength, ts, hdr_disabled=hdr_off
+            dehaze_strength, ts, hdr_disabled=hdr_off, focus_locked=focus_locked
         )
         if not args.quiet_unchanged:
             print(
                 f"[{ts}] OK | Sun={elev:+.2f} deg az={sun_az:.1f} ({phase}){glare_diag} | "
-                f"camera already at {cur_ev:+.2f} EV, B={cur_bri}, C={cur_con}, S={cur_sat}, HDR=off"
+                f"camera already at {cur_ev:+.2f} EV, B={cur_bri}, C={cur_con}, S={cur_sat}, "
+                f"focus={focus_locked}, HDR=off"
             )
         return 0
 
@@ -802,7 +848,7 @@ def main() -> int:
 
     save_ev_cache(
         args.state_file, usb_session_id, applied_ev, target_bri, target_con, target_sat,
-        dehaze_strength, ts, hdr_disabled=hdr_off
+        dehaze_strength, ts, hdr_disabled=hdr_off, focus_locked=focus_locked
     )
     print(
         f"[{ts}] UPDATED | Sun={elev:+.2f} deg az={sun_az:.1f} ({phase}){glare_diag} | "
