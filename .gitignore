@@ -10,18 +10,27 @@
 __pycache__/
 *.pyc
 
-# Compiled local native binaries (built from uvc_util.m)
+# Compiled local native binaries (built from uvc_util.m, ptz_vision.m, ptz_tracker.m, ptz_app_main.c)
 uvc-util
+ptz-vision
+ptz-tracker
+ptz-app-launcher
 mac_mini_cam
 
 # Runtime caches, logs & incident snapshots
 .ev_state.json
 .ais_cache.json
+monthly_uploads.json
 mac_mini_endpoint.json
+stacks/latest_*.png
+stacks/library/
 incidents/
 *.log
 *.log.1
 *.pt
+models/
+*.mlpackage/
+*.mlmodelc/
 
 # Cloudflare Worker / Vite build & dependencies
 .wrangler/

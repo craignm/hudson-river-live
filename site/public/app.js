@@ -9,7 +9,6 @@
   let currentVideoId = urlParams.get("v") || DEFAULT_VIDEO_ID;
   let player = null;
   let playerReady = false;
-  let idleTimer = null;
 
   // DOM elements
   const nycClockEl = document.getElementById("nycClock");
@@ -35,23 +34,7 @@
     fileProtocolNotice.classList.remove("hidden");
   }
 
-  // --- 2. Auto-hiding HUD on mouse stillness ---
-  function wakeHud() {
-    document.body.classList.remove("user-idle");
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      if (!document.body.classList.contains("drawer-open")) {
-        document.body.classList.add("user-idle");
-      }
-    }, 3600);
-  }
-
-  ["mousemove", "mousedown", "touchstart", "keydown"].forEach((evt) => {
-    window.addEventListener(evt, wakeHud, { passive: true });
-  });
-  wakeHud();
-
-  // --- 3. YouTube IFrame Player Setup ---
+  // --- 2. YouTube IFrame Player Setup ---
   function updateWatchLinks(videoId, watchUrl) {
     const href = watchUrl || `https://www.youtube.com/watch?v=${videoId}`;
     ytWatchLink.href = href;
@@ -144,6 +127,73 @@
     }
   }
 
+  function formatLag(sec) {
+    const s = Math.max(0, Math.round(sec));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m > 0 ? `-${m}:${String(r).padStart(2, "0")}` : `-${r}s`;
+  }
+
+  function keepMainStreamLive(forceSeek = false) {
+    if (!player || !playerReady || document.hidden) return;
+    try {
+      const pState = typeof player.getPlayerState === "function" ? player.getPlayerState() : 1;
+      const dur = typeof player.getDuration === "function" ? player.getDuration() : 0;
+      const cur = typeof player.getCurrentTime === "function" ? player.getCurrentTime() : 0;
+      const lag = dur > 0 && cur > 0 ? dur - cur : 0;
+
+      if (forceSeek) {
+        player.playVideo?.();
+        if (dur > 0) player.seekTo?.(dur + 2, true);
+        player.setPlaybackRate?.(1.0);
+        liveBadge.classList.remove("standby");
+        liveBadgeText.textContent = "LIVE";
+        return;
+      }
+
+      if (pState !== 1) return;
+
+      // Respect intentional >40s DVR rewinds, but clearly badge them & allow 1-click return to LIVE
+      if (dur > 0 && lag > 40) {
+        if (typeof player.getPlaybackRate === "function" && player.getPlaybackRate() !== 1) {
+          player.setPlaybackRate?.(1.0);
+        }
+        liveBadge.classList.add("standby");
+        liveBadgeText.textContent = `DVR ${formatLag(lag)} · GO LIVE`;
+      } else if (dur > 0 && lag > 6.5) {
+        // Silently heal accidental tab/buffer drift back to the live edge at 1.25×
+        player.setPlaybackRate?.(1.25);
+        liveBadge.classList.remove("standby");
+        liveBadgeText.textContent = "LIVE";
+      } else {
+        if (typeof player.getPlaybackRate === "function" && player.getPlaybackRate() !== 1) {
+          player.setPlaybackRate?.(1.0);
+        }
+        liveBadge.classList.remove("standby");
+        liveBadgeText.textContent = "LIVE";
+      }
+    } catch (_) {}
+  }
+
+  if (liveBadge) {
+    liveBadge.style.cursor = "pointer";
+    liveBadge.title = "Click to jump to live edge";
+    liveBadge.addEventListener("click", () => keepMainStreamLive(true));
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && player && playerReady) {
+      try {
+        const dur = player.getDuration?.() || 0;
+        const cur = player.getCurrentTime?.() || 0;
+        // Snap back to live on tab wake unless user deliberately rewound >3 minutes into DVR
+        if (dur > 0 && dur - cur > 10 && dur - cur < 180) {
+          keepMainStreamLive(true);
+        }
+      } catch (_) {}
+    }
+  });
+  setInterval(() => keepMainStreamLive(false), 3000);
+
   checkActiveStream();
   setInterval(checkActiveStream, 5 * 60 * 1000);
 
@@ -171,7 +221,6 @@
     infoDrawer.classList.toggle("hidden", !open);
     document.body.classList.toggle("drawer-open", open);
     btnInfo.setAttribute("aria-expanded", String(open));
-    if (open) wakeHud();
   }
 
   btnLandmarks.addEventListener("click", toggleLandmarks);
@@ -184,6 +233,7 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const key = e.key.toLowerCase();
     if (key === "l") toggleLandmarks();
+    else if (key === "h") document.body.classList.toggle("hud-hidden");
     else if (key === "z") toggleFitFill();
     else if (key === "f") toggleFullscreen();
     else if (key === "i") setInfoOpen(infoDrawer.classList.contains("hidden"));

@@ -35,6 +35,7 @@
 
   let videoMode = "snapshot"; // "obs" | "snapshot" | "webcam"
   let obsBitmap = null;
+  let ptzBitmap = null;
   let obsAutoSwitched = false;
   let serverState = null;
   let lastPollTs = performance.now();
@@ -143,7 +144,12 @@
   // Pipelined OBS preview frame fetcher (~6-18 fps on demand, zero MJPEG memory leak across Chrome/Safari)
   async function obsFrameLoop() {
     while (true) {
-      if (serverState?.obs_cam?.connected && (videoMode === "obs" || !obsAutoSwitched)) {
+      const skipSynInObsFullscreen = isObsMode && Boolean(serverState?.obs_cam?.ptz_available);
+      if (
+        !skipSynInObsFullscreen &&
+        serverState?.obs_cam?.connected &&
+        (videoMode === "obs" || !obsAutoSwitched)
+      ) {
         try {
           const resp = await fetch("/api/cam_frame.jpg?t=" + Date.now(), { cache: "no-store" });
           if (resp.ok) {
@@ -164,8 +170,39 @@
       }
     }
   }
+
+  // Pipelined optical PTZ video fetcher (via OBS off-air/preview input)
+  let ptzMissStreak = 0;
+  async function ptzFrameLoop() {
+    while (true) {
+      if (!serverState || serverState?.obs_cam?.ptz_available || serverState?.obs_cam?.connected) {
+        try {
+          const resp = await fetch("/api/ptz_frame.jpg?t=" + Date.now(), { cache: "no-store" });
+          if (resp.ok) {
+            const blob = await resp.blob();
+            const bmp = await createImageBitmap(blob);
+            if (ptzBitmap) ptzBitmap.close();
+            ptzBitmap = bmp;
+            ptzMissStreak = 0;
+            await new Promise((r) => setTimeout(r, 55));
+            continue;
+          }
+        } catch (_) {}
+        ptzMissStreak += 1;
+        if (ptzMissStreak >= 6 && ptzBitmap) {
+          ptzBitmap.close();
+          ptzBitmap = null;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      } else {
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    }
+  }
+
   if (!isHudMode) {
     obsFrameLoop();
+    ptzFrameLoop();
   }
 
   cameraDeviceSelect.addEventListener("change", () => {
@@ -212,7 +249,437 @@
     });
   });
 
+  const btnResumeAutoPreset = document.getElementById("btnResumeAutoPreset");
+  document.querySelectorAll(".preset-btn[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pid = btn.dataset.preset;
+      const curActivePid = manualPointOverride?.preset_id || serverState?.manual_point?.preset_id;
+      if (curActivePid === pid && !(serverState && serverState.auto_mode)) {
+        // Clicking the already-active preset toggles back to Auto-Director
+        manualPointOverride = null;
+        postJson("/api/select", { target_id: "__auto__" });
+        return;
+      }
+      // Reset manual zoom buttons back to "Auto" so the preset's recommended zoom takes effect
+      document.querySelectorAll(".zoom-btn").forEach((b) => b.classList.toggle("active", b.dataset.z === "0"));
+      const pr = (serverState?.presets || []).find((p) => p.id === pid);
+      if (pr) {
+        manualPointOverride = {
+          preset_id: pr.id,
+          kind: "landmark",
+          u: pr.u,
+          v: pr.v,
+          zoom_x: pr.zoom_x,
+          dist_km: pr.dist_km,
+          length_m: pr.length_m,
+          label: pr.label,
+          subtitle: pr.subtitle,
+        };
+      }
+      postJson("/api/select", { preset_id: pid });
+    });
+  });
+
+  document.querySelectorAll(".celestial-btn[data-celestial]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cid = btn.dataset.celestial;
+      const cInfo = (serverState?.celestial || []).find((c) => c.id === cid);
+      if (cInfo && !cInfo.visible) {
+        return;
+      }
+      const curActiveCid = manualPointOverride?.celestial_id || serverState?.manual_point?.celestial_id;
+      if (curActiveCid === cid && !(serverState && serverState.auto_mode)) {
+        manualPointOverride = null;
+        postJson("/api/select", { target_id: "__auto__" });
+        return;
+      }
+      document.querySelectorAll(".zoom-btn").forEach((b) => b.classList.toggle("active", b.dataset.z === "0"));
+      if (cInfo) {
+        manualPointOverride = {
+          celestial_id: cInfo.id,
+          kind: "celestial",
+          u: cInfo.u,
+          v: cInfo.v,
+          az_deg: cInfo.az_deg,
+          alt_deg: cInfo.alt_deg,
+          zoom_x: cInfo.zoom_x,
+          dist_km: cInfo.dist_km,
+          length_m: 0,
+          label: cInfo.label,
+          subtitle: cInfo.subtitle,
+        };
+      }
+      postJson("/api/select", { celestial_id: cid });
+    });
+  });
+
+  if (btnResumeAutoPreset) {
+    btnResumeAutoPreset.addEventListener("click", () => {
+      manualPointOverride = null;
+      postJson("/api/select", { target_id: "__auto__" });
+    });
+  }
+
+  const btnLuckyStack = document.getElementById("btnLuckyStack");
+  const btnViewLastStack = document.getElementById("btnViewLastStack");
+  const luckyModal = document.getElementById("luckyModal");
+  const luckyCompareCanvas = document.getElementById("luckyCompareCanvas");
+  const luckySplitSlider = document.getElementById("luckySplitSlider");
+  const btnCloseLuckyModal = document.getElementById("btnCloseLuckyModal");
+  const luckyModalTitle = document.getElementById("luckyModalTitle");
+  const luckyModalStats = document.getElementById("luckyModalStats");
+  const luckyDlAfter = document.getElementById("luckyDlAfter");
+  const luckyDlComp = document.getElementById("luckyDlComp");
+
+  let luckyTriggeredByUser = false;
+  let lastLuckyRunSeen = 0;
+  let luckyBeforeImg = null;
+  let luckyAfterImg = null;
+  let luckySplitFrac = 0.5;
+  let luckyZoom = 1.0;
+  let luckyPanU = 0.5;
+  let luckyPanV = 0.5;
+  let luckyDragMode = null; // "wipe" | "pan"
+  let luckyDragStart = { x: 0, y: 0, panU: 0.5, panV: 0.5 };
+
+  function drawLuckyComparison() {
+    if (!luckyCompareCanvas || !luckyBeforeImg || !luckyAfterImg) return;
+    const ctx = luckyCompareCanvas.getContext("2d");
+    const W = luckyCompareCanvas.width;
+    const H = luckyCompareCanvas.height;
+    const srcW = luckyAfterImg.naturalWidth || 3840;
+    const srcH = luckyAfterImg.naturalHeight || 2160;
+
+    const cropW = srcW / luckyZoom;
+    const cropH = srcH / luckyZoom;
+    const halfU = 0.5 / luckyZoom;
+    const halfV = 0.5 / luckyZoom;
+    luckyPanU = Math.max(halfU, Math.min(1.0 - halfU, luckyPanU));
+    luckyPanV = Math.max(halfV, Math.min(1.0 - halfV, luckyPanV));
+    const sx = luckyPanU * srcW - cropW * 0.5;
+    const sy = luckyPanV * srcH - cropH * 0.5;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.imageSmoothingEnabled = luckyZoom < 2.2;
+    ctx.imageSmoothingQuality = "high";
+
+    const splitX = Math.round(luckySplitFrac * W);
+
+    // Draw AFTER on full canvas, then clip BEFORE to left of splitX
+    ctx.drawImage(luckyAfterImg, sx, sy, cropW, cropH, 0, 0, W, H);
+    if (splitX > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, splitX, H);
+      ctx.clip();
+      ctx.drawImage(luckyBeforeImg, sx, sy, cropW, cropH, 0, 0, W, H);
+      ctx.restore();
+    }
+
+    // Divider line + drag handle
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(splitX, 0);
+    ctx.lineTo(splitX, H);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(9, 13, 22, 0.88)";
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(splitX, H * 0.5, 20, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#e2e8f0";
+    ctx.font = "700 15px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("◀▶", splitX, H * 0.5 + 5);
+
+    // Corner badges
+    ctx.font = "700 16px -apple-system, BlinkMacSystemFont, sans-serif";
+    if (splitX > 150) {
+      ctx.fillStyle = "rgba(9, 13, 22, 0.78)";
+      ctx.fillRect(16, 16, 210, 32);
+      ctx.fillStyle = "#f87171";
+      ctx.textAlign = "left";
+      ctx.fillText("BEFORE (Single Raw Frame)", 26, 37);
+    }
+    if (W - splitX > 180) {
+      ctx.fillStyle = "rgba(9, 13, 22, 0.78)";
+      ctx.fillRect(W - 326, 16, 310, 32);
+      ctx.fillStyle = "#6ee7b7";
+      ctx.textAlign = "right";
+      ctx.fillText("ENHANCED (Lucky Stack + De-Warp + RL)", W - 26, 37);
+    }
+  }
+
+  function loadLuckyImages(beforeUrl, afterUrl, dlPngUrl, dlName, compUrl) {
+    if (luckyDlAfter && dlPngUrl) {
+      luckyDlAfter.href = dlPngUrl;
+      luckyDlAfter.download = dlName || "hudson_lucky_stacked_4k.png";
+    }
+    if (luckyDlComp) {
+      luckyDlComp.style.display = compUrl ? "inline-block" : "none";
+      if (compUrl) luckyDlComp.href = compUrl;
+    }
+    const bImg = new Image();
+    const aImg = new Image();
+    let loaded = 0;
+    const onDone = () => {
+      loaded += 1;
+      if (loaded === 2) {
+        luckyBeforeImg = bImg;
+        luckyAfterImg = aImg;
+        luckyModal.classList.add("open");
+        drawLuckyComparison();
+      }
+    };
+    bImg.onload = onDone;
+    aImg.onload = onDone;
+    bImg.src = beforeUrl;
+    aImg.src = afterUrl;
+  }
+
+  function openLibraryItem(item) {
+    if (!luckyModal || !item) return;
+    const slug = (item.title || "hudson_ptz").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    if (luckyModalTitle) {
+      luckyModalTitle.textContent = `ENHANCE! — ${item.title} (${item.width || 3840}×${item.height || 2160} @ ${(item.zoom_x || 30).toFixed(1)}x)`;
+    }
+    if (luckyModalStats) {
+      const when = item.timestamp ? new Date(item.timestamp * 1000).toLocaleString() : "";
+      luckyModalStats.textContent = `${item.frames_stacked}/${item.frames_captured} Frames  •  ${item.snr_improvement_x}× SNR${when ? "  •  " + when : ""}`;
+    }
+    loadLuckyImages(
+      `/api/enhance_library/${item.before_jpg}`,
+      `/api/enhance_library/${item.after_jpg}`,
+      `/api/enhance_library/${item.after_png}`,
+      `${slug}_4k.png`,
+      null
+    );
+  }
+
+  async function refreshLibraryStrip(selectFirstIfEmpty = false) {
+    const strip = document.getElementById("luckyLibraryStrip");
+    if (!strip) return;
+    try {
+      const r = await fetch("/api/enhance_library");
+      const data = await r.json();
+      const items = data.items || [];
+      strip.innerHTML = "";
+      for (const it of items) {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.style.cssText =
+          "flex:0 0 156px; padding:4px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.12); border-radius:7px; color:#e2e8f0; text-align:left; cursor:pointer;";
+        card.innerHTML = `<img src="/api/enhance_library/${it.thumb_file}" style="width:100%; height:82px; object-fit:cover; border-radius:4px; display:block; margin-bottom:4px;" loading="lazy"/><div style="font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${it.title}</div><div style="font-size:10px; color:#94a3b8;">${it.snr_improvement_x}× SNR · ${(it.zoom_x || 30).toFixed(0)}×</div>`;
+        card.addEventListener("click", () => openLibraryItem(it));
+        strip.appendChild(card);
+      }
+      if (selectFirstIfEmpty && items.length > 0) {
+        openLibraryItem(items[0]);
+      }
+    } catch (_) {}
+  }
+
+  function openLuckyModal(summary) {
+    if (!luckyModal) return;
+    if (!summary) {
+      luckyModal.classList.add("open");
+      refreshLibraryStrip(true);
+      return;
+    }
+    const ts = summary?.timestamp || Date.now();
+    const slug = (summary?.label || "hudson_ptz").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    if (luckyModalTitle) {
+      luckyModalTitle.textContent = `ENHANCE! — ${summary?.label || "4K Stack"} (${summary?.width || 3840}×${summary?.height || 2160} @ ${(summary?.zoom_x || 30).toFixed(1)}x)`;
+    }
+    if (luckyModalStats && summary) {
+      luckyModalStats.textContent = `${summary.frames_stacked}/${summary.frames_captured} Lucky Frames  •  ${summary.snr_improvement_x}× Noise Reduction  •  Seeing Drift ${summary.peak_drift_arcsec}"  •  ${summary.stack_elapsed_s}s`;
+    }
+    loadLuckyImages(
+      `/api/lucky_stack/before.png?t=${ts}`,
+      `/api/lucky_stack/after.png?t=${ts}`,
+      `/api/lucky_stack/after.png?t=${ts}`,
+      `${slug}_lucky_stacked_4k.png`,
+      `/api/lucky_stack/comparison.png?t=${ts}`
+    );
+    refreshLibraryStrip(false);
+  }
+
+  if (btnLuckyStack) {
+    btnLuckyStack.addEventListener("click", async () => {
+      luckyTriggeredByUser = true;
+      btnLuckyStack.disabled = true;
+      btnLuckyStack.textContent = "⏳ Enhancing…";
+      await postJson("/api/lucky_stack", { frames: 28 });
+    });
+  }
+  if (btnViewLastStack) {
+    btnViewLastStack.addEventListener("click", () => {
+      openLuckyModal(serverState?.lucky_stack?.summary || null);
+    });
+  }
+  if (btnCloseLuckyModal) {
+    btnCloseLuckyModal.addEventListener("click", () => luckyModal.classList.remove("open"));
+  }
+  if (luckyModal) {
+    luckyModal.addEventListener("click", (ev) => {
+      if (ev.target === luckyModal) luckyModal.classList.remove("open");
+    });
+  }
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && luckyModal?.classList.contains("open")) {
+      luckyModal.classList.remove("open");
+    }
+  });
+  if (luckySplitSlider) {
+    luckySplitSlider.addEventListener("input", () => {
+      luckySplitFrac = parseFloat(luckySplitSlider.value) / 1000.0;
+      drawLuckyComparison();
+    });
+  }
+  document.querySelectorAll(".lucky-zoom-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".lucky-zoom-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      luckyZoom = parseFloat(btn.dataset.lz) || 1.0;
+      drawLuckyComparison();
+    });
+  });
+  if (luckyCompareCanvas) {
+    luckyCompareCanvas.addEventListener("mousedown", (ev) => {
+      const rect = luckyCompareCanvas.getBoundingClientRect();
+      const fx = (ev.clientX - rect.left) / rect.width;
+      if (Math.abs(fx - luckySplitFrac) < 0.035 || luckyZoom <= 1.01) {
+        luckyDragMode = "wipe";
+        luckySplitFrac = Math.max(0.02, Math.min(0.98, fx));
+        if (luckySplitSlider) luckySplitSlider.value = String(Math.round(luckySplitFrac * 1000));
+        drawLuckyComparison();
+      } else {
+        luckyDragMode = "pan";
+        luckyDragStart = { x: ev.clientX, y: ev.clientY, panU: luckyPanU, panV: luckyPanV };
+      }
+    });
+    window.addEventListener("mousemove", (ev) => {
+      if (!luckyDragMode || !luckyModal?.classList.contains("open")) return;
+      const rect = luckyCompareCanvas.getBoundingClientRect();
+      if (luckyDragMode === "wipe") {
+        luckySplitFrac = Math.max(0.02, Math.min(0.98, (ev.clientX - rect.left) / rect.width));
+        if (luckySplitSlider) luckySplitSlider.value = String(Math.round(luckySplitFrac * 1000));
+        drawLuckyComparison();
+      } else if (luckyDragMode === "pan") {
+        const du = (ev.clientX - luckyDragStart.x) / (rect.width * luckyZoom);
+        const dv = (ev.clientY - luckyDragStart.y) / (rect.height * luckyZoom);
+        luckyPanU = luckyDragStart.panU - du;
+        luckyPanV = luckyDragStart.panV - dv;
+        drawLuckyComparison();
+      }
+    });
+    window.addEventListener("mouseup", () => {
+      luckyDragMode = null;
+    });
+    luckyCompareCanvas.addEventListener(
+      "wheel",
+      (ev) => {
+        ev.preventDefault();
+        const factor = ev.deltaY < 0 ? 1.22 : 1.0 / 1.22;
+        luckyZoom = Math.max(1.0, Math.min(8.0, luckyZoom * factor));
+        document.querySelectorAll(".lucky-zoom-btn").forEach((b) => b.classList.remove("active"));
+        drawLuckyComparison();
+      },
+      { passive: false }
+    );
+  }
+
+  const btnOnePushAf = document.getElementById("btnOnePushAf");
+  const btnAutoAf = document.getElementById("btnAutoAf");
+  const btnAutoCalibPtz = document.getElementById("btnAutoCalibPtz");
+  const chkDailyCalib = document.getElementById("chkDailyCalib");
+  const ptzCameraModelSelect = document.getElementById("ptzCameraModelSelect");
+  const sonyHostInput = document.getElementById("sonyHostInput");
+  const sonyPassInput = document.getElementById("sonyPassInput");
+  const btnSaveSonyAuth = document.getElementById("btnSaveSonyAuth");
+  const ptzYoutubeKeyInput = document.getElementById("ptzYoutubeKeyInput");
+  const btnSavePtzYoutubeKey = document.getElementById("btnSavePtzYoutubeKey");
+  const btnTogglePtzYoutube = document.getElementById("btnTogglePtzYoutube");
+  const btnToggleMonthlyYt = document.getElementById("btnToggleMonthlyYt");
+  let lastCalibRunSeen = 0;
+
+  if (btnToggleMonthlyYt) {
+    btnToggleMonthlyYt.addEventListener("click", () => {
+      const curEn = Boolean(serverState?.monthly_youtube?.enabled ?? true);
+      postJson("/api/settings", { monthly_youtube_enabled: !curEn });
+    });
+  }
+
+  if (btnSavePtzYoutubeKey) {
+    btnSavePtzYoutubeKey.addEventListener("click", () => {
+      if (ptzYoutubeKeyInput && ptzYoutubeKeyInput.value.trim() !== "") {
+        postJson("/api/settings", {
+          ptz_youtube_key: ptzYoutubeKeyInput.value.trim(),
+          ptz_youtube_enabled: true,
+        });
+        ptzYoutubeKeyInput.value = "";
+      }
+    });
+  }
+  if (btnTogglePtzYoutube) {
+    btnTogglePtzYoutube.addEventListener("click", () => {
+      const curEnabled = Boolean(serverState?.ptz_youtube?.enabled);
+      const payload = { ptz_youtube_enabled: !curEnabled };
+      if (!curEnabled && ptzYoutubeKeyInput && ptzYoutubeKeyInput.value.trim() !== "") {
+        payload.ptz_youtube_key = ptzYoutubeKeyInput.value.trim();
+        ptzYoutubeKeyInput.value = "";
+      }
+      postJson("/api/settings", payload);
+    });
+  }
+
+  if (ptzCameraModelSelect) {
+    ptzCameraModelSelect.addEventListener("change", () => {
+      calibInitialized = false;
+      postJson("/api/settings", { ptz_camera_model: ptzCameraModelSelect.value });
+    });
+  }
+  if (btnSaveSonyAuth) {
+    btnSaveSonyAuth.addEventListener("click", () => {
+      const payload = {};
+      if (sonyHostInput && sonyHostInput.value.trim()) {
+        payload.ptz_sony_host = sonyHostInput.value.trim();
+      }
+      if (sonyPassInput && sonyPassInput.value !== "") {
+        payload.ptz_sony_pass = sonyPassInput.value;
+        sonyPassInput.value = "";
+      }
+      postJson("/api/settings", payload);
+    });
+  }
+
+  if (btnOnePushAf) {
+    btnOnePushAf.addEventListener("click", () => {
+      postJson("/api/ptz_focus", { mode: "one_push" });
+    });
+  }
+  if (btnAutoAf) {
+    btnAutoAf.addEventListener("click", () => {
+      postJson("/api/ptz_focus", { mode: "auto" });
+    });
+  }
+  if (btnAutoCalibPtz) {
+    btnAutoCalibPtz.addEventListener("click", () => {
+      postJson("/api/calibrate_ptz", { reason: "mission_control" });
+    });
+  }
+  if (chkDailyCalib) {
+    chkDailyCalib.addEventListener("change", () => {
+      postJson("/api/settings", { ptz_auto_recalibrate_daily: chkDailyCalib.checked });
+    });
+  }
+
   btnSaveCalib.addEventListener("click", () => {
+    const calRollEl = document.getElementById("calPtzRoll");
     postJson("/api/settings", {
       calibration: {
         az_deg: parseFloat(document.getElementById("calAz").value),
@@ -222,6 +689,9 @@
         alt_m: parseFloat(document.getElementById("calAlt").value),
         k1: parseFloat(document.getElementById("calK1").value),
         adsb_lead_s: parseFloat(document.getElementById("calLead").value),
+        ptz_pan_offset_deg: parseFloat(document.getElementById("calPtzPan").value),
+        ptz_tilt_offset_deg: parseFloat(document.getElementById("calPtzTilt").value),
+        ptz_roll_offset_deg: calRollEl ? parseFloat(calRollEl.value) : 0.0,
       },
     });
   });
@@ -257,7 +727,7 @@
         zoom_x: cam.zoom > 3 ? cam.zoom : 15.0,
         label: v < 0.56 ? "MANUAL SKY POINT" : "MANUAL RIVER POINT",
       };
-      postJson("/api/settings", { auto_mode: false });
+      postJson("/api/select", { manual_point: manualPointOverride });
     }
   });
 
@@ -420,6 +890,10 @@
     try {
       const res = await fetch("/api/state");
       serverState = await res.json();
+      if (serverState.auto_mode || serverState.manual_point) {
+        // Server has acknowledged either Auto-Director or the active manual/preset point
+        manualPointOverride = null;
+      }
       lastPollTs = performance.now();
       updateDashboardUI(serverState);
     } catch (_) {}
@@ -466,8 +940,32 @@
       }
     }
 
-    btnAuto.classList.toggle("active", st.auto_mode && !manualPointOverride);
-    btnAuto.textContent = `Auto-Director: ${st.auto_mode && !manualPointOverride ? "ON" : "MANUAL"}`;
+    const isAutoActive = Boolean(st.auto_mode && !manualPointOverride && !st.manual_point);
+    btnAuto.classList.toggle("active", isAutoActive);
+    btnAuto.textContent = `Auto-Director: ${isAutoActive ? "ON" : "MANUAL"}`;
+
+    const activePresetId = (manualPointOverride || st.manual_point)?.preset_id || null;
+    document.querySelectorAll(".preset-btn[data-preset]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.preset === activePresetId);
+    });
+
+    const activeCelestialId = (manualPointOverride || st.manual_point)?.celestial_id || null;
+    const celById = new Map((st.celestial || []).map((c) => [c.id, c]));
+    document.querySelectorAll(".celestial-btn[data-celestial]").forEach((btn) => {
+      const cid = btn.dataset.celestial;
+      const cInfo = celById.get(cid);
+      btn.classList.toggle("active", cid === activeCelestialId);
+      if (cInfo) {
+        btn.classList.toggle("out-of-view", !cInfo.visible);
+        const altTag = `${cInfo.alt_deg >= 0 ? "+" : ""}${Math.round(cInfo.alt_deg)}°`;
+        btn.textContent = `${cInfo.icon} ${cInfo.name} (${altTag})`;
+        btn.title = cInfo.status_note;
+      }
+    });
+
+    if (btnResumeAutoPreset) {
+      btnResumeAutoPreset.style.display = isAutoActive ? "none" : "inline-block";
+    }
 
     btnSimShips.classList.toggle("active", st.enable_sim_vessels);
     btnSimShips.textContent = `Sim Boats: ${st.enable_sim_vessels ? "ON" : "OFF"}`;
@@ -477,6 +975,45 @@
 
     document.getElementById("dwellLabel").textContent =
       st.auto_mode && st.active_target_id ? `Next switch in: ${st.dwell_remaining_s.toFixed(0)}s` : "Manual lock";
+
+    if (st.lucky_stack && btnLuckyStack) {
+      const ls = st.lucky_stack;
+      if (ls.running) {
+        btnLuckyStack.disabled = true;
+        btnLuckyStack.textContent = `⏳ Enhancing ${ls.progress_pct || 0}%…`;
+        btnLuckyStack.title = ls.message || "Enhancing…";
+      } else {
+        btnLuckyStack.disabled = false;
+        btnLuckyStack.textContent = "Enhance!";
+        btnLuckyStack.title = ls.message || "Capture 28 lossless 4K frames, de-warp turbulence, and deconvolve";
+        if (btnViewLastStack) {
+          const libCnt = st.library_count || 0;
+          btnViewLastStack.textContent = libCnt > 0 ? `🖼 Library (${libCnt})` : "🖼 Library";
+        }
+        if (ls.last_run_ts && ls.last_ok) {
+          if (lastLuckyRunSeen === 0 && !luckyTriggeredByUser) {
+            lastLuckyRunSeen = ls.last_run_ts;
+          } else if (ls.last_run_ts > lastLuckyRunSeen) {
+            lastLuckyRunSeen = ls.last_run_ts;
+            if (luckyTriggeredByUser) {
+              luckyTriggeredByUser = false;
+              luckyZoom = 1.0;
+              luckyPanU = 0.5;
+              luckyPanV = 0.5;
+              document.querySelectorAll(".lucky-zoom-btn").forEach((b) =>
+                b.classList.toggle("active", b.dataset.lz === "1")
+              );
+              openLuckyModal(ls.summary);
+            }
+          }
+        }
+      }
+    }
+
+    if (st.ptz_calibration && st.ptz_calibration.last_run_ts && st.ptz_calibration.last_run_ts !== lastCalibRunSeen) {
+      lastCalibRunSeen = st.ptz_calibration.last_run_ts;
+      calibInitialized = false;
+    }
 
     if (!calibInitialized && st.calibration) {
       calibInitialized = true;
@@ -491,6 +1028,162 @@
       if (st.calibration.adsb_lead_s !== undefined) {
         document.getElementById("calLead").value = st.calibration.adsb_lead_s;
       }
+      if (st.calibration.ptz_pan_offset_deg !== undefined) {
+        document.getElementById("calPtzPan").value = Number(st.calibration.ptz_pan_offset_deg).toFixed(3);
+      }
+      if (st.calibration.ptz_tilt_offset_deg !== undefined) {
+        document.getElementById("calPtzTilt").value = Number(st.calibration.ptz_tilt_offset_deg).toFixed(3);
+      }
+      const calRollEl = document.getElementById("calPtzRoll");
+      if (calRollEl && st.calibration.ptz_roll_offset_deg !== undefined) {
+        calRollEl.value = Number(st.calibration.ptz_roll_offset_deg).toFixed(3);
+      }
+    }
+
+    const ptzCalibText = document.getElementById("ptzCalibStatusText");
+    if (ptzCalibText && st.ptz_calibration) {
+      const pc = st.ptz_calibration;
+      if (pc.running) {
+        ptzCalibText.style.color = "#38bdf8";
+        ptzCalibText.textContent = `Calibrating (${pc.progress_pct || 0}%): ${pc.message}`;
+      } else {
+        ptzCalibText.style.color = pc.last_ok === false ? "#f87171" : "var(--muted)";
+        ptzCalibText.textContent = pc.message || "PTZ Auto-Calibration: Ready";
+      }
+      if (btnAutoCalibPtz) {
+        btnAutoCalibPtz.disabled = !!pc.running;
+        btnAutoCalibPtz.classList.toggle("active", !!pc.running);
+        btnAutoCalibPtz.textContent = pc.running ? `Calibrating ${pc.progress_pct || 0}%…` : "Auto-Calibrate 30x";
+      }
+    }
+    if (chkDailyCalib && st.ptz_auto_recalibrate_daily !== undefined && document.activeElement !== chkDailyCalib) {
+      chkDailyCalib.checked = !!st.ptz_auto_recalibrate_daily;
+    }
+
+    if (ptzCameraModelSelect && st.ptz_camera_model && document.activeElement !== ptzCameraModelSelect) {
+      if (ptzCameraModelSelect.value !== st.ptz_camera_model) {
+        ptzCameraModelSelect.value = st.ptz_camera_model;
+        calibInitialized = false;
+      }
+    }
+    const sonyBanner = document.getElementById("sonyAuthBanner");
+    const sonyStatusText = document.getElementById("sonyAuthStatusText");
+    const sonyWebUiLink = document.getElementById("sonyWebUiLink");
+    if (sonyBanner) {
+      const isSony = (st.ptz_camera_model || "sony_a40") === "sony_a40";
+      sonyBanner.style.display = isSony ? "flex" : "none";
+      if (isSony && st.hw_ptz) {
+        const sHost = st.ptz_sony_host || st.hw_ptz.host || "192.168.1.136";
+        if (sonyHostInput && document.activeElement !== sonyHostInput && !sonyHostInput.dataset.edited) {
+          sonyHostInput.value = sHost;
+        }
+        if (sonyWebUiLink) sonyWebUiLink.href = `http://${sHost}/`;
+        if (st.hw_ptz.needs_password_init) {
+          sonyBanner.style.background = "rgba(245, 158, 11, 0.16)";
+          sonyStatusText.style.color = "#fbbf24";
+          sonyStatusText.textContent = `First-time setup needed: click "Sony UI ↗" (${sHost}) to set an admin password, then paste it here →`;
+        } else if (st.hw_ptz.auth_failed) {
+          sonyBanner.style.background = "rgba(239, 68, 68, 0.16)";
+          sonyStatusText.style.color = "#f87171";
+          sonyStatusText.textContent = `Sony SRG-A40 (${sHost}) requires admin password →`;
+        } else if (st.hw_ptz.reachable) {
+          sonyBanner.style.background = "rgba(16, 185, 129, 0.10)";
+          sonyStatusText.style.color = "#6ee7b7";
+          sonyStatusText.textContent = `Sony ${st.hw_ptz.model_name || "SRG-A40"} connected @ ${sHost} (FW ${st.hw_ptz.firmware || "4.00"})`;
+        } else {
+          sonyBanner.style.background = "rgba(239, 68, 68, 0.12)";
+          sonyStatusText.style.color = "#fca5a5";
+          sonyStatusText.textContent = st.hw_ptz.last_error || `Sony SRG-A40 unreachable @ ${sHost}`;
+        }
+      }
+    }
+
+    const ytBanner = document.getElementById("ptzYoutubeBanner");
+    const ytStatusText = document.getElementById("ptzYoutubeStatusText");
+    if (ytBanner && st.ptz_youtube) {
+      const py = st.ptz_youtube;
+      if (btnTogglePtzYoutube) {
+        btnTogglePtzYoutube.classList.toggle("active", Boolean(py.enabled));
+        btnTogglePtzYoutube.textContent = py.enabled ? "YT Stream: LIVE" : "YT Stream: OFF";
+      }
+      if (ptzYoutubeKeyInput && document.activeElement !== ptzYoutubeKeyInput && !ptzYoutubeKeyInput.value) {
+        ptzYoutubeKeyInput.placeholder = py.has_key
+          ? `Key saved (${py.masked_key || "••••"})`
+          : "YouTube Stream Key";
+      }
+      if (py.streaming) {
+        ytBanner.style.background = "rgba(16, 185, 129, 0.12)";
+        ytStatusText.style.color = "#6ee7b7";
+        ytStatusText.textContent = py.status_text || "YouTube PTZ Broadcast: LIVE";
+      } else if (py.enabled && !py.has_key) {
+        ytBanner.style.background = "rgba(245, 158, 11, 0.14)";
+        ytStatusText.style.color = "#fbbf24";
+        ytStatusText.textContent = "Paste YouTube Stream Key & click Save Key to start PTZ stream →";
+      } else {
+        ytBanner.style.background = "rgba(56, 189, 248, 0.06)";
+        ytStatusText.style.color = "var(--muted)";
+        ytStatusText.textContent = py.status_text || "YouTube PTZ Broadcast (Chyron + Overview Inset): Ready";
+      }
+    }
+
+    const monthlyBanner = document.getElementById("monthlyYoutubeBanner");
+    const monthlyStatusText = document.getElementById("monthlyYoutubeStatusText");
+    if (monthlyBanner && st.monthly_youtube) {
+      const my = st.monthly_youtube;
+      if (btnToggleMonthlyYt) {
+        btnToggleMonthlyYt.classList.toggle("active", Boolean(my.enabled));
+        btnToggleMonthlyYt.textContent = `Monthly 5×: ${my.enabled ? "ON" : "PAUSED"}`;
+      }
+      if (my.running_job) {
+        monthlyBanner.style.background = "rgba(16, 185, 129, 0.16)";
+        monthlyStatusText.style.color = "#6ee7b7";
+        monthlyStatusText.textContent = `🔴 ${my.status_text}`;
+      } else if (!my.oauth_ready) {
+        monthlyBanner.style.background = "rgba(245, 158, 11, 0.14)";
+        monthlyStatusText.style.color = "#fbbf24";
+        monthlyStatusText.textContent = my.status_text;
+      } else {
+        monthlyBanner.style.background = "rgba(56, 189, 248, 0.06)";
+        monthlyStatusText.style.color = "var(--muted)";
+        monthlyStatusText.textContent = my.status_text;
+      }
+    }
+
+    const ptzHeader = document.getElementById("ptzHeaderLabel");
+    if (ptzHeader && st.hw_ptz?.enabled) {
+      const distStr = st.hw_ptz.dist_km != null ? ` @ ${st.hw_ptz.dist_km.toFixed(2)}km` : "";
+      if (st.hw_ptz.camera_model === "sony_a40") {
+        const fMode =
+          st.hw_ptz.focus_mode === "sony_af_20m_limit"
+            ? `AF ≥20m Window-Safe (${st.hw_ptz.focus_abs ?? "0x2000"}${distStr})`
+            : st.hw_ptz.focus_mode === "manual_lock"
+            ? `Manual Focus ${st.hw_ptz.focus_abs ?? ""}`
+            : "One-Push AF";
+        const expStr = st.hw_ptz.exp_comp != null ? ` · VE Comp ${st.hw_ptz.exp_comp}` : "";
+        const errTag = st.hw_ptz.needs_password_init
+          ? " · Setup Password ↓"
+          : st.hw_ptz.auth_failed
+          ? " · Auth Needed ↓"
+          : "";
+        ptzHeader.innerHTML = `<strong>2. Sony SRG-A40 4K PTZ</strong> — Gigabit CGI ${st.hw_ptz.host} (${fMode}${expStr}${errTag})`;
+      } else {
+        const trimVal = st.hw_ptz.focus_trim || 0;
+        const trimStr = trimVal !== 0 ? ` ${trimVal > 0 ? "+" : ""}${trimVal}` : "";
+        const fMode =
+          st.hw_ptz.focus_mode === "calibrated_curve"
+            ? `3D Dist Focus ${st.hw_ptz.focus_abs ?? "—"}${trimStr}${distStr}`
+            : st.hw_ptz.focus_mode === "one_push" || st.hw_ptz.focus_mode === "manual_lock"
+            ? "Focus Locked"
+            : "Auto AF";
+        const expStr =
+          st.hw_ptz.exposure_profile === "night_ae8"
+            ? " · Night AE"
+            : st.hw_ptz.exp_iris != null && st.hw_ptz.exp_shutter != null
+            ? ` · Exp i${st.hw_ptz.exp_iris}/s${st.hw_ptz.exp_shutter}`
+            : "";
+        const linkTxt = st.hw_ptz.transport === "usb_uvc" ? "USB 3.0 Direct" : `VISCA ${st.hw_ptz.host}`;
+        ptzHeader.innerHTML = `<strong>2. FoMaKo 30x Optical PTZ</strong> — ${linkTxt} (${fMode}${expStr})`;
+      }
     }
 
     // Target table
@@ -498,7 +1191,7 @@
     tbody.innerHTML = "";
     for (const t of st.targets) {
       const tr = document.createElement("tr");
-      if (t.id === st.active_target_id && !manualPointOverride) tr.className = "selected";
+      if (t.id === st.active_target_id && !manualPointOverride && !st.manual_point) tr.className = "selected";
       const altOrLen = t.kind === "vessel" ? `${Math.round(t.length_m)}m hull` : `${t.alt_ft.toLocaleString()} ft`;
       tr.innerHTML = `
         <td><span class="tag ${t.kind}">${t.kind}${t.cv_locked ? " +CV" : ""}</span></td>
@@ -633,23 +1326,26 @@
 
     // Determine active target with continuous velocity feed-forward
     let activeTarget = null;
-    if (manualPointOverride) {
+    const activeManualPoint = manualPointOverride || (!serverState?.auto_mode ? serverState?.manual_point : null);
+    if (activeManualPoint) {
       activeTarget = {
-        callsign: manualPointOverride.label,
-        subtitle: "Manual Synoptic Click Override",
-        kind: "aircraft",
-        u: manualPointOverride.u,
-        v: manualPointOverride.v,
+        callsign: activeManualPoint.label,
+        subtitle: activeManualPoint.subtitle || "Manual Synoptic Click Override",
+        kind: activeManualPoint.kind || (activeManualPoint.preset_id ? "landmark" : "manual"),
+        u: activeManualPoint.u,
+        v: activeManualPoint.v,
         du_s: 0,
         dv_s: 0,
-        rec_zoom_x: manualPointOverride.zoom_x,
-        dist_km: 1.8,
-        length_m: 25,
+        rec_zoom_x: activeManualPoint.zoom_x,
+        dist_km: activeManualPoint.dist_km || 1.8,
+        length_m: activeManualPoint.length_m || 25,
         gs_kts: 0,
         alt_ft: 0,
       };
     } else if (serverState && serverState.active_target_id) {
-      const base = serverState.targets.find((t) => t.id === serverState.active_target_id);
+      const base =
+        serverState.targets.find((t) => t.id === serverState.active_target_id) ||
+        serverState.active_target;
       if (base) {
         const vt = visualTracks.get(base.id);
         activeTarget = vt
@@ -660,8 +1356,8 @@
 
     const desiredU = activeTarget ? Math.max(0.03, Math.min(0.97, activeTarget.u)) : 0.5;
     const desiredV = activeTarget ? Math.max(0.03, Math.min(0.97, activeTarget.v)) : 0.5;
-    const desiredZoom = manualPointOverride
-      ? manualPointOverride.zoom_x
+    const desiredZoom = activeManualPoint
+      ? activeManualPoint.zoom_x
       : serverState?.ptz?.zoom_x || (activeTarget ? activeTarget.rec_zoom_x : 1.0);
 
     // Critically damped spring-damper + exact image-space velocity feed-forward
@@ -798,18 +1494,22 @@
       }
     }
 
-    // 2) Draw PTZ Zoomed Output Canvas
-    if (!isHudMode && mediaReady) {
+    // 2) Draw PTZ Zoomed Output Canvas (Real Optical FoMaKo 30x if connected, else simulated crop)
+    if (!isHudMode && (ptzBitmap || mediaReady)) {
       const W = ptzCanvas.width;
       const H = ptzCanvas.height;
-      const cropW = srcW / cam.zoom;
-      const cropH = srcH / cam.zoom;
-      const cropX = Math.max(0, Math.min(srcW - cropW, cam.u * srcW - cropW * 0.5));
-      const cropY = Math.max(0, Math.min(srcH - cropH, cam.v * srcH - cropH * 0.5));
-
       ptzCtx.imageSmoothingEnabled = true;
       ptzCtx.imageSmoothingQuality = "high";
-      ptzCtx.drawImage(srcMedia, cropX, cropY, cropW, cropH, 0, 0, W, H);
+
+      if (ptzBitmap) {
+        ptzCtx.drawImage(ptzBitmap, 0, 0, W, H);
+      } else {
+        const cropW = srcW / cam.zoom;
+        const cropH = srcH / cam.zoom;
+        const cropX = Math.max(0, Math.min(srcW - cropW, cam.u * srcW - cropW * 0.5));
+        const cropY = Math.max(0, Math.min(srcH - cropH, cam.v * srcH - cropH * 0.5));
+        ptzCtx.drawImage(srcMedia, cropX, cropY, cropW, cropH, 0, 0, W, H);
+      }
 
       if (!isObsMode) {
         drawOpticalScaleSilhouette(ptzCtx, W, H, activeTarget, cam.zoom, hfov);
@@ -819,8 +1519,13 @@
     // Update PTZ HUD & Broadcast Lower-Third Chyron
     const panDeg = (cam.u - 0.5) * hfov;
     const tiltDeg = (0.5 - cam.v) * hfov * 0.5625;
-    document.getElementById("ptzHudTop").textContent =
-      `PAN ${panDeg >= 0 ? "+" : ""}${panDeg.toFixed(1)}°   TILT ${tiltDeg >= 0 ? "+" : ""}${tiltDeg.toFixed(1)}°   ZOOM ${cam.zoom.toFixed(1)}x`;
+    if (activeManualPoint && activeManualPoint.kind === "celestial" && activeManualPoint.az_deg !== undefined) {
+      document.getElementById("ptzHudTop").textContent =
+        `AZ ${activeManualPoint.az_deg.toFixed(1)}°   ALT ${activeManualPoint.alt_deg >= 0 ? "+" : ""}${activeManualPoint.alt_deg.toFixed(1)}°   ZOOM ${cam.zoom.toFixed(1)}x   [SIDEREAL]`;
+    } else {
+      document.getElementById("ptzHudTop").textContent =
+        `PAN ${panDeg >= 0 ? "+" : ""}${panDeg.toFixed(1)}°   TILT ${tiltDeg >= 0 ? "+" : ""}${tiltDeg.toFixed(1)}°   ZOOM ${cam.zoom.toFixed(1)}x`;
+    }
 
     const chyron = document.getElementById("chyron");
     const cTitle = document.getElementById("chyronTitle");
@@ -832,6 +1537,10 @@
         "chyron " +
         (activeTarget.source?.startsWith("cv_")
           ? "cv"
+          : activeTarget.kind === "celestial"
+          ? "celestial"
+          : activeTarget.kind === "landmark"
+          ? "landmark"
           : activeTarget.kind === "helicopter"
           ? "heli"
           : activeTarget.kind === "vessel"
@@ -840,13 +1549,15 @@
       cTitle.textContent = activeTarget.callsign;
       cBadge.textContent = activeTarget.kind.toUpperCase();
       const parts = [activeTarget.subtitle];
-      if (activeTarget.kind !== "vessel" && activeTarget.alt_ft > 0) {
-        parts.push(`${activeTarget.alt_ft.toLocaleString()} ft`);
-      } else if (activeTarget.length_m) {
+      if (activeTarget.kind === "aircraft" || activeTarget.kind === "helicopter") {
+        if (activeTarget.alt_ft > 0) parts.push(`${activeTarget.alt_ft.toLocaleString()} ft`);
+      } else if (activeTarget.kind === "vessel" && activeTarget.length_m) {
         parts.push(`${Math.round(activeTarget.length_m)}m length`);
       }
       if (activeTarget.gs_kts > 0) parts.push(`${activeTarget.gs_kts} kts`);
-      parts.push(`${activeTarget.dist_km.toFixed(2)} km away`);
+      if (activeTarget.kind !== "celestial") {
+        parts.push(`${activeTarget.dist_km.toFixed(2)} km away`);
+      }
       cSub.textContent = parts.join("  •  ");
     } else {
       chyron.className = "chyron";

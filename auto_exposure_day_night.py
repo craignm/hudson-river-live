@@ -10,14 +10,14 @@ via ./uvc-util without opening AVCaptureSession or interrupting a live 24/7 OBS 
       * Sun >= -1.0 deg (Daytime + Golden Hour + Sunset):     0.00 EV baseline
       * -1.0 deg > Sun > -6.0 deg (Civil Twilight, ~28 min):  smooth ramp 0.00 -> -1.80 EV
       * Sun <= -6.0 deg (Civil Dusk through Civil Dawn):     -1.80 EV (prevents pier floodlight bloom)
-  - Cloud-Aware Midday Solar Glare Dehaze (SSW window, camera azimuth ~204 deg):
+  - Cloud-Aware Midday Solar Backlight & Glare Compensation (SSW window, camera azimuth ~204 deg):
       * When the Sun is shining onto the SSW window (elev >= 6 deg, |az - cam_az| <= 72 deg),
-        samples a tiny 160x90 frame from OBS WebSocket to verify actual sunny veiling glare
-        vs. overcast clouds, and smoothly dials 12-bit camera ISP dehaze:
-          - exposure-comp-ev:  0.00 -> -0.36 EV  (shrinks solar/river highlight clipping)
-          - brightness:          50 -> 44        (subtracts milky window-glass veiling glare floor)
-          - contrast:            50 -> 62        (restores skyline & river midtone separation)
-          - saturation:          56 -> 61        (recovers color washed out by white glare)
+        samples a tiny 160x90 frame from OBS WebSocket to verify actual sunny backlighting/glare
+        vs. overcast clouds, and smoothly dials 12-bit camera ISP shadow fill + color recovery:
+          - exposure-comp-ev:  0.00 -> +0.06 EV  (prevents solar/river auto-exposure from starving land)
+          - brightness:          50 -> 55        (lifts shadowed backlit Manhattan/Little Island/NJ land)
+          - contrast:            50 -> 49        (gently opens shadow dynamic range without clipping sky)
+          - saturation:          56 -> 60        (recovers color washed out by SSW window glare)
       * Automatically relaxes back to baseline (50 / 50 / 56 / 0.00 EV) when clouds roll in,
         during golden hour, and overnight — with zero USB or OBS traffic outside glare hours.
 """
@@ -34,10 +34,11 @@ import socket
 import struct
 import subprocess
 import sys
+import time
 import urllib.parse
 import zlib
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # Default Chelsea Hudson River window coordinates & SSW camera azimuth (overridden by calibration.json)
 DEFAULT_LAT = 40.74482298892839
@@ -55,13 +56,29 @@ BASE_BRIGHTNESS = 50
 BASE_CONTRAST = 50
 BASE_SATURATION = 56
 
-# Calibrated 4K optical infinity focus position through the Hudson window (`0..100`, `auto-focus=0`)
-DEFAULT_INFINITY_FOCUS = 86
+# Calibrated 4K optical infinity focus (`0..100`, `auto-focus=0`) across camera temperature:
+#   - Ambient / Night / Overcast (~20 C): focus-abs = 91 (peak native-4K Tenengrad on WTC & Jersey City)
+#   - Direct SSW Sun (~45-55 C housing):  focus-abs = 86 (polymer dn/dT thermal shift in full sun)
+DEFAULT_INFINITY_FOCUS = 91
+DEFAULT_INFINITY_FOCUS_HOT = 86
+FOCUS_SAFETY_MIN = 84
+FOCUS_SAFETY_MAX = 94
+THERMAL_RC_TAU_SEC = 1500.0       # ~25-min thermal RC time constant of aluminum housing + window
+FOCUS_TRIM_INTERVAL_SEC = 1800.0  # Periodic +/-1 step closed-loop 4K skyline sharpness check (30 min)
+MIN_SKYLINE_TENENGRAD = 3500.0    # Fog/rain guard: skip closed-loop focus probe in low visibility
+FOCUS_TRIM_HYSTERESIS = 1.022     # Require >= 2.2% 2-frame native-4K Tenengrad gain to adopt a +/-1 trim
 
-DEHAZE_MAX_EV_DELTA = -0.36
-DEHAZE_MIN_BRIGHTNESS = 44
-DEHAZE_MAX_CONTRAST = 62
-DEHAZE_MAX_SATURATION = 61
+# Distant skyline ROIs (x0, y0, x1, y1) for closed-loop infinity sharpness (excludes foreground & sky):
+#   [0] Lower Manhattan / One WTC (2.2 mi), [1] Jersey City waterfront towers (2.6 mi)
+SKYLINE_FOCUS_BOXES = (
+    (0.21, 0.37, 0.32, 0.57),
+    (0.55, 0.49, 0.69, 0.59),
+)
+
+DEHAZE_MAX_EV_DELTA = 0.06
+DEHAZE_MIN_BRIGHTNESS = 55
+DEHAZE_MAX_CONTRAST = 49
+DEHAZE_MAX_SATURATION = 60
 
 DEFAULT_OBS_URL = os.environ.get("OBS_URL", "obs://127.0.0.1:4455")
 
@@ -446,11 +463,11 @@ def sample_obs_camera_glare_clarity(obs_url: str, applied_strength: float) -> Op
         p02 = sl[int(n * 0.02)]
         p99 = sl[min(n - 1, int(n * 0.99))]
 
-        # Reconstruct pre-dehaze equivalents so already-applied ISP dehaze never causes oscillation
-        est_raw_p02 = p02 + 28.0 * applied_strength
-        glitter_thresh = 230.0 - 16.0 * applied_strength
+        # Reconstruct pre-compensation equivalents so active ISP shadow lift never causes oscillation
+        est_raw_p02 = max(0.0, p02 - 6.0 * applied_strength)
+        glitter_thresh = 230.0 + 5.0 * applied_strength
         est_b230_pct = 100.0 * sum(1 for v in sl if v >= glitter_thresh) / n
-        est_raw_p99 = min(255.0, p99 + 14.0 * applied_strength)
+        est_raw_p99 = max(0.0, min(255.0, p99 - 4.0 * applied_strength))
 
         # Overcast guard: cloudy days have p99 ~ 195-210 and 0% specular river/sun glitter
         if est_raw_p99 < 218.0 and est_b230_pct < 0.15:
@@ -479,6 +496,321 @@ def compute_isp_targets_from_strength(base_day_ev: float, strength: float) -> Tu
     con = int(round(BASE_CONTRAST + s * (DEHAZE_MAX_CONTRAST - BASE_CONTRAST)))
     sat = int(round(BASE_SATURATION + s * (DEHAZE_MAX_SATURATION - BASE_SATURATION)))
     return ev, bri, con, sat
+
+
+# ==============================================================================
+# Thermal Feed-Forward + Closed-Loop Skyline Sharpness Focus Tracking
+# ==============================================================================
+
+def _open_obs_camera_ws(obs_url: str, timeout: float = 5.0) -> Optional[Tuple[socket.socket, str]]:
+    """Opens an authenticated OBS WebSocket v5 session and resolves the raw camera input name."""
+    parsed = urllib.parse.urlparse(obs_url if "://" in obs_url else f"obs://{obs_url}")
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 4455
+    password = urllib.parse.unquote(parsed.password or "")
+
+    sock = socket.create_connection((host, port), timeout=timeout)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        req = (
+            f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock.sendall(req.encode("ascii"))
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(1024)
+            if not chunk:
+                sock.close()
+                return None
+            buf += chunk
+
+        hello = _ws_recv_json(sock)
+        auth_info = (hello.get("d") or {}).get("authentication")
+        ident: Dict[str, object] = {"rpcVersion": 1, "eventSubscriptions": 0}
+        if auth_info:
+            secret = base64.b64encode(
+                hashlib.sha256((password + auth_info["salt"]).encode("utf-8")).digest()
+            ).decode("ascii")
+            ident["authentication"] = base64.b64encode(
+                hashlib.sha256((secret + auth_info["challenge"]).encode("utf-8")).digest()
+            ).decode("ascii")
+        _ws_send_text(sock, json.dumps({"op": 1, "d": ident}))
+        if _ws_recv_json(sock).get("op") != 2:
+            sock.close()
+            return None
+
+        _ws_send_text(sock, json.dumps({"op": 6, "d": {"requestType": "GetInputList", "requestId": "inp"}}))
+        cam_name = ""
+        while True:
+            msg = _ws_recv_json(sock)
+            if msg.get("op") == 7 and (msg.get("d") or {}).get("requestId") == "inp":
+                for inp in ((msg["d"].get("responseData") or {}).get("inputs") or []):
+                    kind = inp.get("unversionedInputKind") or inp.get("inputKind") or ""
+                    if kind.startswith("macos-avcapture") or kind.startswith("av_capture_input"):
+                        cam_name = inp.get("inputName") or ""
+                        break
+                break
+        if not cam_name:
+            sock.close()
+            return None
+        return sock, cam_name
+    except Exception:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return None
+
+
+def _grab_obs_png(sock: socket.socket, cam_name: str, req_id: str, width: int = 3840, height: int = 2160) -> bytes:
+    _ws_send_text(
+        sock,
+        json.dumps(
+            {
+                "op": 6,
+                "d": {
+                    "requestType": "GetSourceScreenshot",
+                    "requestId": req_id,
+                    "requestData": {
+                        "sourceName": cam_name,
+                        "imageFormat": "png",
+                        "imageWidth": width,
+                        "imageHeight": height,
+                    },
+                },
+            }
+        ),
+    )
+    while True:
+        msg = _ws_recv_json(sock)
+        if msg.get("op") == 7 and (msg.get("d") or {}).get("requestId") == req_id:
+            b64 = ((msg["d"].get("responseData") or {}).get("imageData")) or ""
+            if "," in b64:
+                b64 = b64.split(",", 1)[1]
+            return base64.b64decode(b64) if b64 else b""
+
+
+def _compute_roi_tenengrad(png: bytes, boxes: Tuple[Tuple[float, float, float, float], ...]) -> List[float]:
+    """
+    Pure-stdlib PNG partial-row Sobel Tenengrad sharpness (`Gx^2 + Gy^2`, gated above sensor noise).
+    Stops decoding scanlines right below the lowest ROI box for ~0.2s execution on Apple Silicon.
+    """
+    if len(png) < 33 or png[:8] != b"\x89PNG\r\n\x1a\n":
+        return [0.0 for _ in boxes]
+    pos = 8
+    width = height = color_type = 0
+    idat = bytearray()
+    while pos + 8 <= len(png):
+        ln, ctype = struct.unpack("!I4s", png[pos : pos + 8])
+        cdata = png[pos + 8 : pos + 8 + ln]
+        pos += 12 + ln
+        if ctype == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack("!IIBB", cdata[:10])
+            if bit_depth != 8 or color_type not in (2, 6):
+                return [0.0 for _ in boxes]
+        elif ctype == b"IDAT":
+            idat.extend(cdata)
+        elif ctype == b"IEND":
+            break
+    if not width or not height or not idat:
+        return [0.0 for _ in boxes]
+
+    bpp = 4 if color_type == 6 else 3
+    stride = width * bpp
+    raw = zlib.decompress(bytes(idat))
+    min_y = max(0, min(int(y0 * height) for (_, y0, _, _) in boxes) - 1)
+    max_y = min(height, max(int(y1 * height) for (_, _, _, y1) in boxes) + 2)
+
+    prev = bytearray(stride)
+    cur = bytearray(stride)
+    green_rows: Dict[int, bytes] = {}
+    p = 0
+    for y in range(max_y):
+        ftype = raw[p]
+        p += 1
+        row = raw[p : p + stride]
+        p += stride
+        if ftype == 0:
+            cur[:] = row
+        elif ftype == 1:
+            for i in range(stride):
+                cur[i] = (row[i] + (cur[i - bpp] if i >= bpp else 0)) & 0xFF
+        elif ftype == 2:
+            for i in range(stride):
+                cur[i] = (row[i] + prev[i]) & 0xFF
+        elif ftype == 3:
+            for i in range(stride):
+                a = cur[i - bpp] if i >= bpp else 0
+                cur[i] = (row[i] + ((a + prev[i]) >> 1)) & 0xFF
+        elif ftype == 4:
+            for i in range(stride):
+                a = cur[i - bpp] if i >= bpp else 0
+                b = prev[i]
+                c = prev[i - bpp] if i >= bpp else 0
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                cur[i] = (row[i] + pr) & 0xFF
+        if y >= min_y:
+            green_rows[y] = bytes(cur[1::bpp])
+        prev, cur = cur, prev
+
+    scores: List[float] = []
+    for (x0f, y0f, x1f, y1f) in boxes:
+        x0, x1 = int(x0f * width), int(x1f * width)
+        y0, y1 = int(y0f * height), int(y1f * height)
+        tenengrad = 0
+        npix = max(1, (x1 - x0 - 2) * (y1 - y0 - 2))
+        for y in range(y0 + 1, y1 - 1):
+            rm = green_rows[y - 1]
+            rc = green_rows[y]
+            rp = green_rows[y + 1]
+            for x in range(x0 + 1, x1 - 1):
+                gx = (rm[x + 1] + 2 * rc[x + 1] + rp[x + 1]) - (rm[x - 1] + 2 * rc[x - 1] + rp[x - 1])
+                gy = (rp[x - 1] + 2 * rp[x] + rp[x + 1]) - (rm[x - 1] + 2 * rm[x] + rm[x + 1])
+                mag2 = gx * gx + gy * gy
+                if mag2 > 900:  # Gate out dark sky / shadow sensor noise (|G| > 30)
+                    tenengrad += mag2
+        scores.append(tenengrad / npix)
+    return scores
+
+
+def update_thermal_load(prev_load: float, solar_heat_input: float, dt_sec: float) -> float:
+    """First-order thermal RC filter modeling afternoon sun heating & dusk cooldown of camera body."""
+    if dt_sec <= 0.0 or dt_sec > 6 * 3600.0:
+        return round(max(0.0, min(1.0, solar_heat_input)), 3)
+    alpha = 1.0 - math.exp(-dt_sec / THERMAL_RC_TAU_SEC)
+    updated = prev_load + alpha * (max(0.0, min(1.0, solar_heat_input)) - prev_load)
+    return 0.0 if updated < 0.01 else round(min(1.0, updated), 3)
+
+
+def compute_feedforward_focus(focus_cool: int, focus_hot: int, thermal_load: float) -> int:
+    raw = round(focus_cool + max(0.0, min(1.0, thermal_load)) * (focus_hot - focus_cool))
+    return max(FOCUS_SAFETY_MIN, min(FOCUS_SAFETY_MAX, int(raw)))
+
+
+def maybe_micro_trim_infinity_focus(
+    uvc_bin: Path,
+    obs_url: str,
+    ff_focus: int,
+    cur_trim: int,
+    probe_dir: int,
+    ts: str,
+) -> Tuple[int, int, Optional[int]]:
+    """
+    Probes +/-1 focus-abs unit (up to 2 winning steps per check) against 2-frame averaged
+    native-4K (3840x2160) skyline Tenengrad sharpness within [FOCUS_SAFETY_MIN..FOCUS_SAFETY_MAX].
+    Returns (updated_trim, next_probe_dir, verified_applied_focus).
+    """
+    cur_target = max(FOCUS_SAFETY_MIN, min(FOCUS_SAFETY_MAX, ff_focus + cur_trim))
+    direction = 1 if probe_dir >= 0 else -1
+    cand = cur_target + direction
+    if cand < FOCUS_SAFETY_MIN or cand > FOCUS_SAFETY_MAX:
+        direction = -direction
+        cand = cur_target + direction
+    if cand < FOCUS_SAFETY_MIN or cand > FOCUS_SAFETY_MAX or cand == cur_target:
+        return cur_trim, -direction, None
+
+    conn = _open_obs_camera_ws(obs_url, timeout=5.0)
+    if conn is None:
+        return cur_trim, probe_dir, None
+    sock, cam_name = conn
+    try:
+        # Ensure baseline focus is active before measuring (native 3840x2160 avoids 1080p Nyquist aliasing)
+        run_uvc_util(uvc_bin, ["-s", "auto-focus=0", "-s", f"focus-abs={cur_target}"])
+        time.sleep(0.55)
+        b1 = _compute_roi_tenengrad(_grab_obs_png(sock, cam_name, "f_b1"), SKYLINE_FOCUS_BOXES)
+        time.sleep(0.15)
+        b2 = _compute_roi_tenengrad(_grab_obs_png(sock, cam_name, "f_b2"), SKYLINE_FOCUS_BOXES)
+        base_score = 0.25 * (b1[0] + b1[1] + b2[0] + b2[1])
+
+        if base_score < MIN_SKYLINE_TENENGRAD:
+            # Heavy fog / rain / whiteout: keep feed-forward focus untouched
+            return cur_trim, probe_dir, cur_target
+
+        steps_taken = 0
+        while steps_taken < 2:
+            cand = cur_target + direction
+            if cand < FOCUS_SAFETY_MIN or cand > FOCUS_SAFETY_MAX:
+                break
+            run_uvc_util(uvc_bin, ["-s", f"focus-abs={cand}"])
+            time.sleep(0.75)
+            c1 = _compute_roi_tenengrad(_grab_obs_png(sock, cam_name, f"f_c1_{steps_taken}"), SKYLINE_FOCUS_BOXES)
+            time.sleep(0.15)
+            c2 = _compute_roi_tenengrad(_grab_obs_png(sock, cam_name, f"f_c2_{steps_taken}"), SKYLINE_FOCUS_BOXES)
+            cand_score = 0.25 * (c1[0] + c1[1] + c2[0] + c2[1])
+
+            if cand_score >= base_score * FOCUS_TRIM_HYSTERESIS:
+                gain_pct = 100.0 * (cand_score / base_score - 1.0)
+                new_trim = cand - ff_focus
+                print(
+                    f"[{ts}] FOCUS-TRIM | Skyline 4K sharpness improved +{gain_pct:.1f}% "
+                    f"({base_score:.0f}->{cand_score:.0f}): focus-abs {cur_target}->{cand} (ff={ff_focus}, trim={new_trim:+d})"
+                )
+                cur_target = cand
+                base_score = cand_score
+                steps_taken += 1
+            else:
+                # Restore best focus immediately (single 1-unit step)
+                run_uvc_util(uvc_bin, ["-s", f"focus-abs={cur_target}"])
+                break
+
+        next_dir = direction if steps_taken > 0 else -direction
+        return (cur_target - ff_focus), next_dir, cur_target
+    except Exception:
+        try:
+            run_uvc_util(uvc_bin, ["-s", f"focus-abs={cur_target}"])
+        except Exception:
+            pass
+        return (cur_target - ff_focus), -direction, None
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def run_interactive_focus_calibration(uvc_bin: Path, obs_url: str) -> int:
+    """Sweeps `focus-abs` across the optical infinity window [84..90] and locks peak skyline sharpness."""
+    conn = _open_obs_camera_ws(obs_url, timeout=6.0)
+    if conn is None:
+        print(f"ERROR: Could not connect to OBS WebSocket at {obs_url}", file=sys.stderr)
+        return 1
+    sock, cam_name = conn
+    boxes = SKYLINE_FOCUS_BOXES + ((0.03, 0.82, 0.22, 0.96),)
+    print(f"Calibrating 4K optical infinity on '{cam_name}' across focus-abs {FOCUS_SAFETY_MIN}..{FOCUS_SAFETY_MAX + 1}:")
+    print("-" * 78)
+    best_f = DEFAULT_INFINITY_FOCUS
+    best_s = -1.0
+    cur_f = FOCUS_SAFETY_MIN
+    try:
+        for fval in range(FOCUS_SAFETY_MIN, FOCUS_SAFETY_MAX + 1):
+            run_uvc_util(uvc_bin, ["-s", "auto-focus=0", "-s", f"focus-abs={fval}"])
+            cur_f = fval
+            time.sleep(0.8)
+            r1 = _compute_roi_tenengrad(_grab_obs_png(sock, cam_name, f"cal_{fval}_1"), boxes)
+            time.sleep(0.15)
+            r2 = _compute_roi_tenengrad(_grab_obs_png(sock, cam_name, f"cal_{fval}_2"), boxes)
+            wtc = 0.5 * (r1[0] + r2[0])
+            jc = 0.5 * (r1[1] + r2[1])
+            fg = 0.5 * (r1[2] + r2[2])
+            sky = 0.5 * (wtc + jc)
+            print(f"  focus-abs={fval:3d} | skyline={sky:8.1f} (WTC={wtc:8.1f}, JC={jc:8.1f}) | fg_50m={fg:8.1f}")
+            if fval <= FOCUS_SAFETY_MAX and sky > best_s:
+                best_s = sky
+                best_f = fval
+        while cur_f != best_f:
+            cur_f += 1 if best_f > cur_f else -1
+            run_uvc_util(uvc_bin, ["-s", f"focus-abs={cur_f}"])
+            time.sleep(0.25)
+        print("-" * 78)
+        print(f"Locked peak optical infinity: auto-focus=0, focus-abs={best_f} (skyline Tenengrad={best_s:.1f})")
+        return 0
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 
 # ==============================================================================
@@ -531,6 +863,11 @@ def save_ev_cache(
     ts: str,
     hdr_disabled: bool = True,
     focus_locked: Optional[int] = DEFAULT_INFINITY_FOCUS,
+    thermal_load: float = 0.0,
+    focus_trim: int = 0,
+    focus_probe_dir: int = 1,
+    last_focus_trim_epoch: float = 0.0,
+    updated_epoch: Optional[float] = None,
 ) -> None:
     if session_id is None:
         return
@@ -544,6 +881,11 @@ def save_ev_cache(
             "dehaze_strength": round(float(dehaze_strength), 3),
             "hdr_disabled": bool(hdr_disabled),
             "focus_locked": focus_locked,
+            "thermal_load": round(float(thermal_load), 3),
+            "focus_trim": int(focus_trim),
+            "focus_probe_dir": 1 if int(focus_probe_dir) >= 0 else -1,
+            "last_focus_trim_epoch": round(float(last_focus_trim_epoch), 1),
+            "updated_epoch": round(float(updated_epoch if updated_epoch is not None else time.time()), 1),
             "updated_at": ts,
         }
         cache_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -704,7 +1046,10 @@ def main() -> int:
     parser.add_argument("--ramp-start-deg", type=float, default=DEFAULT_RAMP_START_DEG, help="Solar elevation to start dusk ramp (default: -1.0 deg)")
     parser.add_argument("--ramp-end-deg", type=float, default=DEFAULT_RAMP_END_DEG, help="Solar elevation to finish dusk ramp (default: -6.0 deg)")
     parser.add_argument("--no-dehaze", action="store_true", help="Disable midday solar window glare dehazing")
-    parser.add_argument("--focus-abs", type=int, default=DEFAULT_INFINITY_FOCUS, help="Manual optical infinity focus register 0..100 to lock (-1 to skip, default: 86)")
+    parser.add_argument("--focus-abs", type=int, default=DEFAULT_INFINITY_FOCUS, help="Ambient/cool optical infinity focus register 0..100 (-1 to skip, default: 91)")
+    parser.add_argument("--focus-abs-hot", type=int, default=DEFAULT_INFINITY_FOCUS_HOT, help="Solar-heated optical infinity focus register 0..100 (default: 86)")
+    parser.add_argument("--no-focus-trim", action="store_true", help="Disable periodic +/-1 closed-loop skyline sharpness micro-trim")
+    parser.add_argument("--calibrate-focus", action="store_true", help="Sweep focus-abs across infinity window via OBS native-4K Tenengrad and exit")
     parser.add_argument("--force-ev", type=float, default=None, help="Immediately set a specific EV (-3.0 to +3.0) with baseline ISP and exit")
     parser.add_argument("--force-sync", action="store_true", help="Bypass sessionID cache and verify/re-apply ISP over USB")
     parser.add_argument("--state-file", type=Path, default=base_dir / ".ev_state.json", help="Path to cached USB sessionID + ISP state")
@@ -719,15 +1064,25 @@ def main() -> int:
         print_today_schedule(lat, lon, cam_az, args)
         return 0
 
+    if args.calibrate_focus:
+        return run_interactive_focus_calibration(args.uvc_bin, args.obs_url)
+
+    now_epoch = time.time()
     now_local = dt.datetime.now().astimezone()
     elev, sun_az = solar_position_deg(now_local.astimezone(dt.timezone.utc), lat, lon)
     ts = now_local.strftime("%Y-%m-%d %H:%M:%S %Z")
 
     cache = load_ev_cache(args.state_file)
     prev_strength = float(cache.get("dehaze_strength", 0.0) or 0.0)
+    prev_thermal = float(cache.get("thermal_load", 0.0) or 0.0)
+    prev_epoch = float(cache.get("updated_epoch", 0.0) or 0.0)
+    focus_trim = int(cache.get("focus_trim", 0) or 0)
+    focus_probe_dir = 1 if int(cache.get("focus_probe_dir", 1) or 1) >= 0 else -1
+    last_focus_trim_epoch = float(cache.get("last_focus_trim_epoch", 0.0) or 0.0)
 
     glare_diag = ""
     dehaze_strength = 0.0
+    solar_heat_input = 0.0
     if args.force_ev is not None:
         target_ev = snap_ev(args.force_ev)
         target_bri, target_con, target_sat = BASE_BRIGHTNESS, BASE_CONTRAST, BASE_SATURATION
@@ -742,6 +1097,7 @@ def main() -> int:
             if obs_sample is not None:
                 clarity, diag = obs_sample
                 raw_target = glare_env * clarity
+                solar_heat_input = raw_target
                 # Smooth EMA over 3-min ticks and quantize to 20% steps to avoid chatter
                 smoothed = 0.65 * raw_target + 0.35 * prev_strength
                 if raw_target >= 0.85 and prev_strength == 0.0:
@@ -752,6 +1108,7 @@ def main() -> int:
                 glare_diag = f" | glare_env={glare_env:.2f} clarity={clarity:.2f} ({diag})"
             else:
                 dehaze_strength = prev_strength * 0.5 if prev_strength >= 0.4 else 0.0
+                solar_heat_input = dehaze_strength
             target_ev, target_bri, target_con, target_sat = compute_isp_targets_from_strength(
                 base_ev, dehaze_strength
             )
@@ -761,10 +1118,24 @@ def main() -> int:
             target_ev = base_ev
             target_bri, target_con, target_sat = BASE_BRIGHTNESS, BASE_CONTRAST, BASE_SATURATION
 
+    dt_sec = (now_epoch - prev_epoch) if prev_epoch > 0.0 else 0.0
+    thermal_load = update_thermal_load(prev_thermal, solar_heat_input, dt_sec)
+
+    if args.focus_abs >= 0:
+        ff_focus = compute_feedforward_focus(args.focus_abs, args.focus_abs_hot, thermal_load)
+        # Decay residual trim back toward 0 when thermal regime shifts significantly
+        if abs(thermal_load - prev_thermal) >= 0.35:
+            focus_trim = 0
+        want_focus: Optional[int] = max(FOCUS_SAFETY_MIN, min(FOCUS_SAFETY_MAX, ff_focus + focus_trim))
+    else:
+        ff_focus = -1
+        want_focus = None
+
     if args.dry_run:
         print(
             f"[{ts}] DRY-RUN | Sun={elev:+.2f} deg az={sun_az:.1f} ({phase}){glare_diag} -> "
-            f"EV={target_ev:+.2f}, B={target_bri}, C={target_con}, S={target_sat}"
+            f"EV={target_ev:+.2f}, B={target_bri}, C={target_con}, S={target_sat}, "
+            f"focus={want_focus} (thermal={thermal_load:.2f}, trim={focus_trim:+d})"
         )
         return 0
 
@@ -776,11 +1147,18 @@ def main() -> int:
     cached_sat = cache.get("applied_saturation")
     cached_hdr_off = bool(cache.get("hdr_disabled", False))
     cached_focus = cache.get("focus_locked")
-    want_focus = args.focus_abs if args.focus_abs >= 0 else None
+
+    trim_due = (
+        want_focus is not None
+        and not args.no_focus_trim
+        and args.force_ev is None
+        and (args.force_sync or (now_epoch - last_focus_trim_epoch) >= FOCUS_TRIM_INTERVAL_SEC)
+    )
 
     if (
         args.force_ev is None
         and not args.force_sync
+        and not trim_due
         and usb_session_id is not None
         and cached_sid == usb_session_id
         and cached_hdr_off
@@ -791,17 +1169,19 @@ def main() -> int:
         and cached_con == target_con
         and cached_sat == target_sat
     ):
-        # Keep smoothed dehaze_strength fresh if sampled during glare hours
-        if abs(dehaze_strength - prev_strength) > 1e-3:
+        if abs(dehaze_strength - prev_strength) > 1e-3 or abs(thermal_load - prev_thermal) > 1e-2:
             save_ev_cache(
                 args.state_file, usb_session_id, float(cached_ev), target_bri, target_con, target_sat,
-                dehaze_strength, ts, hdr_disabled=True, focus_locked=want_focus
+                dehaze_strength, ts, hdr_disabled=True, focus_locked=want_focus,
+                thermal_load=thermal_load, focus_trim=focus_trim, focus_probe_dir=focus_probe_dir,
+                last_focus_trim_epoch=last_focus_trim_epoch, updated_epoch=now_epoch,
             )
         if not args.quiet_unchanged:
             print(
                 f"[{ts}] CACHED-OK | Sun={elev:+.2f} deg az={sun_az:.1f} ({phase}){glare_diag} | "
                 f"session={usb_session_id} already at {float(cached_ev):+.2f} EV, "
-                f"B={target_bri}, C={target_con}, S={target_sat}, focus={want_focus}, HDR=off (zero USB traffic)"
+                f"B={target_bri}, C={target_con}, S={target_sat}, focus={want_focus} "
+                f"(thermal={thermal_load:.2f}, trim={focus_trim:+d}), HDR=off (zero USB traffic)"
             )
         return 0
 
@@ -810,7 +1190,15 @@ def main() -> int:
         return 1
 
     hdr_off = ensure_hdr_disabled(args.uvc_bin, ts)
-    focus_locked = ensure_infinity_focus_locked(args.uvc_bin, args.focus_abs, ts)
+    if trim_due and ff_focus >= 0:
+        focus_trim, focus_probe_dir, trimmed_focus = maybe_micro_trim_infinity_focus(
+            args.uvc_bin, args.obs_url, ff_focus, focus_trim, focus_probe_dir, ts
+        )
+        last_focus_trim_epoch = now_epoch
+        want_focus = max(FOCUS_SAFETY_MIN, min(FOCUS_SAFETY_MAX, ff_focus + focus_trim))
+        focus_locked = trimmed_focus if trimmed_focus is not None else ensure_infinity_focus_locked(args.uvc_bin, want_focus, ts)
+    else:
+        focus_locked = ensure_infinity_focus_locked(args.uvc_bin, want_focus if want_focus is not None else -1, ts)
 
     cur_isp, err = read_current_isp(args.uvc_bin)
     if cur_isp is None:
@@ -831,13 +1219,15 @@ def main() -> int:
     ):
         save_ev_cache(
             args.state_file, usb_session_id, cur_ev, cur_bri, cur_con, cur_sat,
-            dehaze_strength, ts, hdr_disabled=hdr_off, focus_locked=focus_locked
+            dehaze_strength, ts, hdr_disabled=hdr_off, focus_locked=focus_locked,
+            thermal_load=thermal_load, focus_trim=focus_trim, focus_probe_dir=focus_probe_dir,
+            last_focus_trim_epoch=last_focus_trim_epoch, updated_epoch=now_epoch,
         )
         if not args.quiet_unchanged:
             print(
                 f"[{ts}] OK | Sun={elev:+.2f} deg az={sun_az:.1f} ({phase}){glare_diag} | "
                 f"camera already at {cur_ev:+.2f} EV, B={cur_bri}, C={cur_con}, S={cur_sat}, "
-                f"focus={focus_locked}, HDR=off"
+                f"focus={focus_locked} (thermal={thermal_load:.2f}, trim={focus_trim:+d}), HDR=off"
             )
         return 0
 
@@ -848,12 +1238,14 @@ def main() -> int:
 
     save_ev_cache(
         args.state_file, usb_session_id, applied_ev, target_bri, target_con, target_sat,
-        dehaze_strength, ts, hdr_disabled=hdr_off, focus_locked=focus_locked
+        dehaze_strength, ts, hdr_disabled=hdr_off, focus_locked=focus_locked,
+        thermal_load=thermal_load, focus_trim=focus_trim, focus_probe_dir=focus_probe_dir,
+        last_focus_trim_epoch=last_focus_trim_epoch, updated_epoch=now_epoch,
     )
     print(
         f"[{ts}] UPDATED | Sun={elev:+.2f} deg az={sun_az:.1f} ({phase}){glare_diag} | "
         f"EV {cur_ev:+.2f}->{applied_ev:+.2f}, B {cur_bri}->{target_bri}, "
-        f"C {cur_con}->{target_con}, S {cur_sat}->{target_sat}"
+        f"C {cur_con}->{target_con}, S {cur_sat}->{target_sat}, focus={focus_locked}"
     )
     return 0
 

@@ -1,2 +1,2 @@
 #!/bin/bash
-open "http://192.168.1.175:8765/"
+open "http://craigs-mac-mini.local:8765/"

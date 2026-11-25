@@ -547,11 +547,20 @@ def discover_camera_input(obs: OBSSession, explicit_name: str = "") -> str:
     if explicit_name:
         return explicit_name
     resp = obs.rpc("GetInputList", check=False)
+    candidates = []
     for inp in resp.get("inputs") or []:
         kind = inp.get("unversionedInputKind") or inp.get("inputKind") or ""
         if kind.startswith("macos-avcapture") or kind.startswith("av_capture_input"):
-            return inp.get("inputName") or ""
-    return ""
+            name = inp.get("inputName") or ""
+            if name:
+                candidates.append(name)
+    for name in candidates:
+        cur = obs.rpc("GetInputSettings", {"inputName": name}, check=False).get("inputSettings") or {}
+        dev = str(cur.get("device") or "").lower()
+        dname = str(cur.get("device_name") or "").lower()
+        if "2e1a" in dev or "insta360" in dname:
+            return name
+    return candidates[0] if candidates else ""
 
 
 def grab_source_image(

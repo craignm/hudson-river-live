@@ -1,5 +1,5 @@
 {
-  "camera_name": "Chelsea Window — Insta360 Link 2C Pro",
+  "camera_name": "Chelsea Window \u2014 Insta360 Link 2C",
   "lat": 40.74482298892839,
   "lon": -74.00806308139002,
   "alt_m": 86.0,
@@ -9,22 +9,837 @@
   "hfov_deg": 67.957,
   "k1": -0.06,
   "adsb_lead_s": 0.9,
-  "sensor_width_px": 3840,
-  "sensor_height_px": 2160,
-  "ptz_offset_east_m": 0.25,
-  "ptz_offset_north_m": 0.0,
-  "ptz_offset_up_m": 0.0,
-  "obs_url": "obs://127.0.0.1:4455",
+  "sensor_width_px": 2560,
+  "sensor_height_px": 1440,
+  "ptz_offset_east_m": 0.0977,
+  "ptz_offset_north_m": -0.0494,
+  "ptz_offset_up_m": 0.013,
   "landmarks": [
-    {"name": "1 WTC Spire", "lat": 40.712743, "lon": -74.013379, "alt_m": 546.2},
-    {"name": "1 WTC Roof", "lat": 40.712743, "lon": -74.013379, "alt_m": 417.0},
-    {"name": "Verrazzano W Tower", "lat": 40.607500, "lon": -74.051944, "alt_m": 211.2},
-    {"name": "30 Hudson (GS)", "lat": 40.712760, "lon": -74.034570, "alt_m": 238.1},
-    {"name": "99 Hudson JC", "lat": 40.714580, "lon": -74.036510, "alt_m": 274.3},
-    {"name": "Urby JC", "lat": 40.720370, "lon": -74.034820, "alt_m": 217.3},
-    {"name": "Water's Soul", "lat": 40.731120, "lon": -74.028580, "alt_m": 24.0},
-    {"name": "Whitney Museum", "lat": 40.739600, "lon": -74.008900, "alt_m": 42.0},
-    {"name": "Little Island S Gate", "lat": 40.741220, "lon": -74.009750, "alt_m": 4.5},
-    {"name": "Little Island Center", "lat": 40.741940, "lon": -74.010280, "alt_m": 12.0}
-  ]
+    {
+      "name": "1 WTC Spire",
+      "lat": 40.712743,
+      "lon": -74.013379,
+      "alt_m": 546.2
+    },
+    {
+      "name": "1 WTC Roof",
+      "lat": 40.712743,
+      "lon": -74.013379,
+      "alt_m": 417.0
+    },
+    {
+      "name": "Verrazzano W Tower",
+      "lat": 40.6075,
+      "lon": -74.051944,
+      "alt_m": 211.2
+    },
+    {
+      "name": "30 Hudson (GS)",
+      "lat": 40.71276,
+      "lon": -74.03457,
+      "alt_m": 238.1
+    },
+    {
+      "name": "99 Hudson JC",
+      "lat": 40.71458,
+      "lon": -74.03651,
+      "alt_m": 274.3
+    },
+    {
+      "name": "Urby JC",
+      "lat": 40.72037,
+      "lon": -74.03482,
+      "alt_m": 217.3
+    },
+    {
+      "name": "Water's Soul",
+      "lat": 40.73112,
+      "lon": -74.02858,
+      "alt_m": 24.0
+    },
+    {
+      "name": "Whitney Museum",
+      "lat": 40.7396,
+      "lon": -74.0089,
+      "alt_m": 42.0
+    },
+    {
+      "name": "Little Island S Gate",
+      "lat": 40.74122,
+      "lon": -74.00975,
+      "alt_m": 4.5
+    },
+    {
+      "name": "Little Island Center",
+      "lat": 40.74194,
+      "lon": -74.01028,
+      "alt_m": 12.0
+    }
+  ],
+  "obs_url": "obs://192.168.1.175:4455",
+  "ptz_fomako_ip": "192.168.1.243",
+  "ptz_fomako_port": 5678,
+  "ptz_steps_per_deg": 51.2,
+  "ptz_pan_offset_deg": 23.1151,
+  "ptz_tilt_offset_deg": 4.4629,
+  "ptz_max_zoom_x": 30.0,
+  "ptz_roll_offset_deg": -0.2334,
+  "ptz_pan_scale": 1.03257,
+  "ptz_tilt_scale": 1.04261,
+  "ptz_collimation_pan_10x_deg": 0.0126,
+  "ptz_collimation_tilt_10x_deg": -0.004,
+  "ptz_zoom_hfov_table": [
+    [
+      0,
+      68.0
+    ],
+    [
+      5792,
+      34.2
+    ],
+    [
+      8912,
+      19.21
+    ],
+    [
+      10672,
+      14.47
+    ],
+    [
+      11840,
+      11.4
+    ],
+    [
+      13376,
+      9.32
+    ],
+    [
+      14688,
+      7.2
+    ],
+    [
+      15584,
+      5.95
+    ],
+    [
+      16384,
+      4.01
+    ],
+    [
+      19114,
+      3.21
+    ],
+    [
+      21846,
+      2.679
+    ]
+  ],
+  "ptz_focus_model": {
+    "enabled": false,
+    "zoom_focus_table": [
+      [
+        0,
+        4325
+      ],
+      [
+        16384,
+        4325
+      ],
+      [
+        21846,
+        4325
+      ]
+    ],
+    "inv_km_slope_30x": 0.0
+  },
+  "ptz_day_exposure": {
+    "iris_abs": 4,
+    "shutter_abs": 12,
+    "ambient_ev_bias": 1.6,
+    "manual_glare": true
+  },
+  "ptz_last_calibration": {
+    "timestamp": 1795493800.42,
+    "camera_model": "sony_a40",
+    "reason": "mission_control",
+    "elapsed_s": 176.7,
+    "inlier_count": 9,
+    "total_zones": 9,
+    "pre_rms_deg": 1.658,
+    "post_rms_deg": 0.1398,
+    "summary": "[Sony SRG-A40] Locked 9/9 landmarks at 30x in 176.7s \u2014 RMS 0.140\u00b0 (was 1.658\u00b0), pan +23.12\u00b0, tilt +4.46\u00b0, roll -0.23\u00b0",
+    "landmarks": [
+      {
+        "name": "99 Hudson JC",
+        "lock_stage": "30x",
+        "dist_km": 4.13,
+        "pan_syn_deg": 7.586,
+        "tilt_syn_deg": -0.678,
+        "pan_hw_deg": 31.108,
+        "tilt_hw_deg": 3.776,
+        "residual_pan_deg": 0.1455,
+        "residual_tilt_deg": 0.0936,
+        "residual_deg": 0.173,
+        "focus_30x": 4325,
+        "tenengrad_30x": 296.9923,
+        "psr": 21.61,
+        "score": 0.788,
+        "inlier": true
+      },
+      {
+        "name": "Urby Tower JC",
+        "lock_stage": "30x",
+        "dist_km": 3.54,
+        "pan_syn_deg": 12.351,
+        "tilt_syn_deg": -1.261,
+        "pan_hw_deg": 35.983,
+        "tilt_hw_deg": 3.001,
+        "residual_pan_deg": 0.1028,
+        "residual_tilt_deg": 0.0128,
+        "residual_deg": 0.1036,
+        "focus_30x": 4330,
+        "tenengrad_30x": 37.2638,
+        "psr": 28.97,
+        "score": 0.642,
+        "inlier": true
+      },
+      {
+        "name": "30 Hudson (GS)",
+        "lock_stage": "30x",
+        "dist_km": 4.21,
+        "pan_syn_deg": 4.458,
+        "tilt_syn_deg": -1.604,
+        "pan_hw_deg": 27.698,
+        "tilt_hw_deg": 2.769,
+        "residual_pan_deg": -0.0183,
+        "residual_tilt_deg": 0.0115,
+        "residual_deg": 0.0216,
+        "focus_30x": 4325,
+        "tenengrad_30x": 156.2628,
+        "psr": 20.99,
+        "score": 0.562,
+        "inlier": true
+      },
+      {
+        "name": "Colgate Clock",
+        "lock_stage": "30x",
+        "dist_km": 4.25,
+        "pan_syn_deg": 2.333,
+        "tilt_syn_deg": -4.294,
+        "pan_hw_deg": 25.486,
+        "tilt_hw_deg": -0.142,
+        "residual_pan_deg": -0.0144,
+        "residual_tilt_deg": -0.1136,
+        "residual_deg": 0.1145,
+        "focus_30x": 4325,
+        "tenengrad_30x": 36.4568,
+        "psr": 20.32,
+        "score": 0.625,
+        "inlier": true
+      },
+      {
+        "name": "Statue of Liberty",
+        "lock_stage": "30x",
+        "dist_km": 6.9,
+        "pan_syn_deg": -0.624,
+        "tilt_syn_deg": -3.376,
+        "pan_hw_deg": 22.391,
+        "tilt_hw_deg": 0.844,
+        "residual_pan_deg": -0.0684,
+        "residual_tilt_deg": -0.1017,
+        "residual_deg": 0.1226,
+        "focus_30x": 4315,
+        "tenengrad_30x": 405.1112,
+        "psr": 37.72,
+        "score": 0.541,
+        "inlier": true
+      },
+      {
+        "name": "Newport / Hoboken Waterfront",
+        "lock_stage": "30x",
+        "dist_km": 2.4,
+        "pan_syn_deg": 24.743,
+        "tilt_syn_deg": -2.33,
+        "pan_hw_deg": 48.42,
+        "tilt_hw_deg": 1.602,
+        "residual_pan_deg": -0.2238,
+        "residual_tilt_deg": 0.0967,
+        "residual_deg": 0.2439,
+        "focus_30x": 4344,
+        "tenengrad_30x": 153.9249,
+        "psr": 37.99,
+        "score": 0.846,
+        "inlier": true
+      },
+      {
+        "name": "1 WTC Upper Facade",
+        "lock_stage": "30x",
+        "dist_km": 3.61,
+        "pan_syn_deg": -19.059,
+        "tilt_syn_deg": 2.813,
+        "pan_hw_deg": 3.229,
+        "tilt_hw_deg": 7.214,
+        "residual_pan_deg": -0.088,
+        "residual_tilt_deg": -0.0045,
+        "residual_deg": 0.0881,
+        "focus_30x": 4329,
+        "tenengrad_30x": 74.4503,
+        "psr": 37.61,
+        "score": 0.694,
+        "inlier": true
+      },
+      {
+        "name": "Little Island N Overlook",
+        "lock_stage": "30x",
+        "dist_km": 0.38,
+        "pan_syn_deg": 2.26,
+        "tilt_syn_deg": -13.672,
+        "pan_hw_deg": 25.47,
+        "tilt_hw_deg": -9.895,
+        "residual_pan_deg": 0.0982,
+        "residual_tilt_deg": -0.0884,
+        "residual_deg": 0.1321,
+        "focus_30x": 4576,
+        "tenengrad_30x": 53.5161,
+        "psr": 35.76,
+        "score": 0.663,
+        "inlier": true
+      },
+      {
+        "name": "Whitney Museum",
+        "lock_stage": "30x",
+        "dist_km": 0.59,
+        "pan_syn_deg": -21.939,
+        "tilt_syn_deg": -7.316,
+        "pan_hw_deg": 0.599,
+        "tilt_hw_deg": -3.262,
+        "residual_pan_deg": 0.0005,
+        "residual_tilt_deg": 0.148,
+        "residual_deg": 0.148,
+        "focus_30x": 4478,
+        "tenengrad_30x": 70.1867,
+        "psr": 19.37,
+        "score": 0.839,
+        "inlier": true
+      }
+    ]
+  },
+  "ptz_profiles": {
+    "fomako": {
+      "ptz_offset_east_m": -0.0817,
+      "ptz_offset_north_m": 0.0432,
+      "ptz_offset_up_m": 0.0183,
+      "ptz_pan_offset_deg": 20.4538,
+      "ptz_tilt_offset_deg": 2.6516,
+      "ptz_roll_offset_deg": 0.4519,
+      "ptz_pan_scale": 1.08216,
+      "ptz_tilt_scale": 1.09418,
+      "ptz_collimation_pan_10x_deg": -0.038,
+      "ptz_collimation_tilt_10x_deg": -0.0615,
+      "ptz_steps_per_deg": 14.4,
+      "ptz_max_zoom_x": 30.0,
+      "ptz_zoom_hfov_table": [
+        [
+          0,
+          61.38
+        ],
+        [
+          4096,
+          38.76
+        ],
+        [
+          8192,
+          20.52
+        ],
+        [
+          10240,
+          14.19
+        ],
+        [
+          12288,
+          8.66
+        ],
+        [
+          13824,
+          6.21
+        ],
+        [
+          15104,
+          3.76
+        ],
+        [
+          16384,
+          2.217
+        ]
+      ],
+      "ptz_focus_model": {
+        "enabled": true,
+        "zoom_focus_table": [
+          [
+            0,
+            2000
+          ],
+          [
+            2999,
+            2000
+          ],
+          [
+            5599,
+            2220
+          ],
+          [
+            8235,
+            2528
+          ],
+          [
+            10240,
+            2771
+          ],
+          [
+            12294,
+            3022
+          ],
+          [
+            13824,
+            2887
+          ],
+          [
+            14446,
+            2697
+          ],
+          [
+            14886,
+            2478
+          ],
+          [
+            15128,
+            2313
+          ],
+          [
+            15340,
+            2143
+          ],
+          [
+            15536,
+            1971
+          ],
+          [
+            15712,
+            1781
+          ],
+          [
+            15881,
+            1580
+          ],
+          [
+            16055,
+            1330
+          ],
+          [
+            16204,
+            1057
+          ],
+          [
+            16340,
+            694
+          ],
+          [
+            16384,
+            493
+          ]
+        ],
+        "inv_km_slope_30x": 22.44
+      },
+      "ptz_day_exposure": {
+        "iris_abs": 4,
+        "shutter_abs": 12,
+        "ambient_ev_bias": 1.6,
+        "manual_glare": true
+      },
+      "ptz_last_calibration": {
+        "timestamp": 1795182342.42,
+        "reason": "daily_auto",
+        "elapsed_s": 329.6,
+        "inlier_count": 7,
+        "total_zones": 7,
+        "pre_rms_deg": 3.083,
+        "post_rms_deg": 0.093,
+        "summary": "Locked 7/7 landmarks at 30x in 329.6s \u2014 RMS 0.093\u00b0 (was 3.083\u00b0), pan +20.45\u00b0, tilt +2.65\u00b0, roll +0.45\u00b0, 30x focus 493",
+        "landmarks": [
+          {
+            "name": "99 Hudson JC",
+            "lock_stage": "30x",
+            "dist_km": 4.13,
+            "pan_syn_deg": 9.797,
+            "tilt_syn_deg": -2.262,
+            "pan_hw_deg": 31.153,
+            "tilt_hw_deg": 0.251,
+            "residual_pan_deg": 0.0869,
+            "residual_tilt_deg": 0.0333,
+            "residual_deg": 0.093,
+            "focus_30x": 492,
+            "tenengrad_30x": 7.9188,
+            "psr": 20.97,
+            "score": 0.898,
+            "inlier": true
+          },
+          {
+            "name": "Urby Tower JC",
+            "lock_stage": "30x",
+            "dist_km": 3.54,
+            "pan_syn_deg": 11.886,
+            "tilt_syn_deg": -1.263,
+            "pan_hw_deg": 33.439,
+            "tilt_hw_deg": 1.361,
+            "residual_pan_deg": 0.113,
+            "residual_tilt_deg": 0.0522,
+            "residual_deg": 0.1245,
+            "focus_30x": 499,
+            "tenengrad_30x": 9.2697,
+            "psr": 20.89,
+            "score": 0.891,
+            "inlier": true
+          },
+          {
+            "name": "30 Hudson (GS)",
+            "lock_stage": "30x",
+            "dist_km": 4.21,
+            "pan_syn_deg": 5.098,
+            "tilt_syn_deg": -3.044,
+            "pan_hw_deg": 25.972,
+            "tilt_hw_deg": -0.688,
+            "residual_pan_deg": -0.0161,
+            "residual_tilt_deg": -0.0413,
+            "residual_deg": 0.0443,
+            "focus_30x": 493,
+            "tenengrad_30x": 7.5852,
+            "psr": 19.21,
+            "score": 0.882,
+            "inlier": true
+          },
+          {
+            "name": "Newport / Hoboken Waterfront",
+            "lock_stage": "30x",
+            "dist_km": 2.4,
+            "pan_syn_deg": 22.933,
+            "tilt_syn_deg": -3.703,
+            "pan_hw_deg": 45.197,
+            "tilt_hw_deg": -1.41,
+            "residual_pan_deg": -0.0548,
+            "residual_tilt_deg": 0.0276,
+            "residual_deg": 0.0614,
+            "focus_30x": 496,
+            "tenengrad_30x": 13.7636,
+            "psr": 13.17,
+            "score": 0.851,
+            "inlier": true
+          },
+          {
+            "name": "1 WTC Upper Facade",
+            "lock_stage": "30x",
+            "dist_km": 3.61,
+            "pan_syn_deg": -20.228,
+            "tilt_syn_deg": 3.099,
+            "pan_hw_deg": -1.519,
+            "tilt_hw_deg": 5.649,
+            "residual_pan_deg": 0.016,
+            "residual_tilt_deg": -0.0419,
+            "residual_deg": 0.0448,
+            "focus_30x": 493,
+            "tenengrad_30x": 4.1509,
+            "psr": 24.48,
+            "score": 0.933,
+            "inlier": true
+          },
+          {
+            "name": "Little Island N Overlook",
+            "lock_stage": "30x",
+            "dist_km": 0.38,
+            "pan_syn_deg": 3.872,
+            "tilt_syn_deg": -14.419,
+            "pan_hw_deg": 24.544,
+            "tilt_hw_deg": -13.143,
+            "residual_pan_deg": -0.1639,
+            "residual_tilt_deg": -0.041,
+            "residual_deg": 0.169,
+            "focus_30x": 540,
+            "tenengrad_30x": 18.3464,
+            "psr": 23.81,
+            "score": 0.858,
+            "inlier": true
+          },
+          {
+            "name": "Whitney Museum",
+            "lock_stage": "30x",
+            "dist_km": 0.59,
+            "pan_syn_deg": -22.788,
+            "tilt_syn_deg": -6.685,
+            "pan_hw_deg": -4.062,
+            "tilt_hw_deg": -5.078,
+            "residual_pan_deg": -0.0091,
+            "residual_tilt_deg": 0.0029,
+            "residual_deg": 0.0096,
+            "focus_30x": 536,
+            "tenengrad_30x": 14.2347,
+            "psr": 18.29,
+            "score": 0.82,
+            "inlier": true
+          }
+        ]
+      }
+    },
+    "sony_a40": {
+      "ptz_offset_east_m": 0.0977,
+      "ptz_offset_north_m": -0.0494,
+      "ptz_offset_up_m": 0.013,
+      "ptz_pan_offset_deg": 23.1151,
+      "ptz_tilt_offset_deg": 4.4629,
+      "ptz_roll_offset_deg": -0.2334,
+      "ptz_pan_scale": 1.03257,
+      "ptz_tilt_scale": 1.04261,
+      "ptz_collimation_pan_10x_deg": 0.0126,
+      "ptz_collimation_tilt_10x_deg": -0.004,
+      "ptz_steps_per_deg": 51.2,
+      "ptz_max_zoom_x": 30.0,
+      "ptz_zoom_hfov_table": [
+        [
+          0,
+          68.0
+        ],
+        [
+          5792,
+          34.2
+        ],
+        [
+          8912,
+          19.21
+        ],
+        [
+          10672,
+          14.47
+        ],
+        [
+          11840,
+          11.4
+        ],
+        [
+          13376,
+          9.32
+        ],
+        [
+          14688,
+          7.2
+        ],
+        [
+          15584,
+          5.95
+        ],
+        [
+          16384,
+          4.01
+        ],
+        [
+          19114,
+          3.21
+        ],
+        [
+          21846,
+          2.679
+        ]
+      ],
+      "ptz_focus_model": {
+        "enabled": false,
+        "zoom_focus_table": [
+          [
+            0,
+            4325
+          ],
+          [
+            16384,
+            4325
+          ],
+          [
+            21846,
+            4325
+          ]
+        ],
+        "inv_km_slope_30x": 0.0
+      },
+      "ptz_day_exposure": {
+        "iris_abs": 4,
+        "shutter_abs": 12,
+        "ambient_ev_bias": 1.6,
+        "manual_glare": true
+      },
+      "ptz_last_calibration": {
+        "timestamp": 1795493800.42,
+        "camera_model": "sony_a40",
+        "reason": "mission_control",
+        "elapsed_s": 176.7,
+        "inlier_count": 9,
+        "total_zones": 9,
+        "pre_rms_deg": 1.658,
+        "post_rms_deg": 0.1398,
+        "summary": "[Sony SRG-A40] Locked 9/9 landmarks at 30x in 176.7s \u2014 RMS 0.140\u00b0 (was 1.658\u00b0), pan +23.12\u00b0, tilt +4.46\u00b0, roll -0.23\u00b0",
+        "landmarks": [
+          {
+            "name": "99 Hudson JC",
+            "lock_stage": "30x",
+            "dist_km": 4.13,
+            "pan_syn_deg": 7.586,
+            "tilt_syn_deg": -0.678,
+            "pan_hw_deg": 31.108,
+            "tilt_hw_deg": 3.776,
+            "residual_pan_deg": 0.1455,
+            "residual_tilt_deg": 0.0936,
+            "residual_deg": 0.173,
+            "focus_30x": 4325,
+            "tenengrad_30x": 296.9923,
+            "psr": 21.61,
+            "score": 0.788,
+            "inlier": true
+          },
+          {
+            "name": "Urby Tower JC",
+            "lock_stage": "30x",
+            "dist_km": 3.54,
+            "pan_syn_deg": 12.351,
+            "tilt_syn_deg": -1.261,
+            "pan_hw_deg": 35.983,
+            "tilt_hw_deg": 3.001,
+            "residual_pan_deg": 0.1028,
+            "residual_tilt_deg": 0.0128,
+            "residual_deg": 0.1036,
+            "focus_30x": 4330,
+            "tenengrad_30x": 37.2638,
+            "psr": 28.97,
+            "score": 0.642,
+            "inlier": true
+          },
+          {
+            "name": "30 Hudson (GS)",
+            "lock_stage": "30x",
+            "dist_km": 4.21,
+            "pan_syn_deg": 4.458,
+            "tilt_syn_deg": -1.604,
+            "pan_hw_deg": 27.698,
+            "tilt_hw_deg": 2.769,
+            "residual_pan_deg": -0.0183,
+            "residual_tilt_deg": 0.0115,
+            "residual_deg": 0.0216,
+            "focus_30x": 4325,
+            "tenengrad_30x": 156.2628,
+            "psr": 20.99,
+            "score": 0.562,
+            "inlier": true
+          },
+          {
+            "name": "Colgate Clock",
+            "lock_stage": "30x",
+            "dist_km": 4.25,
+            "pan_syn_deg": 2.333,
+            "tilt_syn_deg": -4.294,
+            "pan_hw_deg": 25.486,
+            "tilt_hw_deg": -0.142,
+            "residual_pan_deg": -0.0144,
+            "residual_tilt_deg": -0.1136,
+            "residual_deg": 0.1145,
+            "focus_30x": 4325,
+            "tenengrad_30x": 36.4568,
+            "psr": 20.32,
+            "score": 0.625,
+            "inlier": true
+          },
+          {
+            "name": "Statue of Liberty",
+            "lock_stage": "30x",
+            "dist_km": 6.9,
+            "pan_syn_deg": -0.624,
+            "tilt_syn_deg": -3.376,
+            "pan_hw_deg": 22.391,
+            "tilt_hw_deg": 0.844,
+            "residual_pan_deg": -0.0684,
+            "residual_tilt_deg": -0.1017,
+            "residual_deg": 0.1226,
+            "focus_30x": 4315,
+            "tenengrad_30x": 405.1112,
+            "psr": 37.72,
+            "score": 0.541,
+            "inlier": true
+          },
+          {
+            "name": "Newport / Hoboken Waterfront",
+            "lock_stage": "30x",
+            "dist_km": 2.4,
+            "pan_syn_deg": 24.743,
+            "tilt_syn_deg": -2.33,
+            "pan_hw_deg": 48.42,
+            "tilt_hw_deg": 1.602,
+            "residual_pan_deg": -0.2238,
+            "residual_tilt_deg": 0.0967,
+            "residual_deg": 0.2439,
+            "focus_30x": 4344,
+            "tenengrad_30x": 153.9249,
+            "psr": 37.99,
+            "score": 0.846,
+            "inlier": true
+          },
+          {
+            "name": "1 WTC Upper Facade",
+            "lock_stage": "30x",
+            "dist_km": 3.61,
+            "pan_syn_deg": -19.059,
+            "tilt_syn_deg": 2.813,
+            "pan_hw_deg": 3.229,
+            "tilt_hw_deg": 7.214,
+            "residual_pan_deg": -0.088,
+            "residual_tilt_deg": -0.0045,
+            "residual_deg": 0.0881,
+            "focus_30x": 4329,
+            "tenengrad_30x": 74.4503,
+            "psr": 37.61,
+            "score": 0.694,
+            "inlier": true
+          },
+          {
+            "name": "Little Island N Overlook",
+            "lock_stage": "30x",
+            "dist_km": 0.38,
+            "pan_syn_deg": 2.26,
+            "tilt_syn_deg": -13.672,
+            "pan_hw_deg": 25.47,
+            "tilt_hw_deg": -9.895,
+            "residual_pan_deg": 0.0982,
+            "residual_tilt_deg": -0.0884,
+            "residual_deg": 0.1321,
+            "focus_30x": 4576,
+            "tenengrad_30x": 53.5161,
+            "psr": 35.76,
+            "score": 0.663,
+            "inlier": true
+          },
+          {
+            "name": "Whitney Museum",
+            "lock_stage": "30x",
+            "dist_km": 0.59,
+            "pan_syn_deg": -21.939,
+            "tilt_syn_deg": -7.316,
+            "pan_hw_deg": 0.599,
+            "tilt_hw_deg": -3.262,
+            "residual_pan_deg": 0.0005,
+            "residual_tilt_deg": 0.148,
+            "residual_deg": 0.148,
+            "focus_30x": 4478,
+            "tenengrad_30x": 70.1867,
+            "psr": 19.37,
+            "score": 0.839,
+            "inlier": true
+          }
+        ]
+      }
+    }
+  },
+  "ptz_camera_model": "sony_a40",
+  "ptz_sony_host": "192.168.1.136",
+  "ptz_sony_user": "admin"
 }

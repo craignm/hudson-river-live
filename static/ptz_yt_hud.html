@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hudson River PTZ YouTube Broadcast Overlay</title>
+  <style>
+    :root {
+      --ship: #10b981;
+      --air: #38bdf8;
+      --heli: #f59e0b;
+      --landmark: #a78bfa;
+      --synoptic: #22d3ee;
+      --celestial: #fbbf24;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: transparent !important;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", sans-serif;
+      color: #f8fafc;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    /* Top-Left Live Clock & Zoom Badge */
+    .top-left-pill {
+      position: fixed;
+      left: 2.5vw;
+      top: 3.75vh;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.65vw;
+      padding: 0.55vh 0.95vw;
+      background: rgba(8, 13, 23, 0.78);
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 999px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.48);
+      font-size: 0.92vw;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+    .live-dot {
+      width: 0.55vw;
+      height: 0.55vw;
+      border-radius: 50%;
+      background: #ef4444;
+      box-shadow: 0 0 10px rgba(239, 68, 68, 0.9);
+    }
+    .sep-dot {
+      color: rgba(148, 163, 184, 0.65);
+    }
+    .zoom-readout {
+      color: #7dd3fc;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Top-Right Overview Inset Frame (exact integer match on 3840x2160: x=2848, y=81, w=896, h=504) */
+    .inset-wrap {
+      position: fixed;
+      left: 74.166667vw;
+      top: 3.75vh;
+      width: 23.333333vw;
+      height: 23.333333vh;
+      border-radius: 0.45vw;
+      border: 2px solid rgba(148, 163, 184, 0.52);
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65);
+      overflow: hidden;
+      transition: opacity 0.22s ease;
+    }
+    .inset-wrap.hidden-synoptic {
+      opacity: 0;
+    }
+    .inset-fallback-bg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+    body.standalone-preview .inset-fallback-bg {
+      display: block;
+    }
+    #insetCanvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .inset-label {
+      position: absolute;
+      left: 0.55vw;
+      top: 0.50vh;
+      padding: 0.22vh 0.52vw;
+      border-radius: 0.28vw;
+      background: rgba(7, 11, 20, 0.78);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      font-size: 0.66vw;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #cbd5e1;
+    }
+
+    /* Broadcast Lower-Third Chyron */
+    .chyron-card {
+      position: fixed;
+      left: 2.5vw;
+      bottom: 4.4vh;
+      max-width: 58vw;
+      min-width: 26vw;
+      background: linear-gradient(135deg, rgba(8, 13, 24, 0.88) 0%, rgba(15, 23, 42, 0.84) 100%);
+      border: 1px solid rgba(148, 163, 184, 0.26);
+      border-left: 0.36vw solid var(--air);
+      border-radius: 0.55vw;
+      padding: 1.35vh 1.45vw 1.45vh 1.35vw;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.62);
+      transition: border-color 0.25s ease, opacity 0.25s ease;
+    }
+    .chyron-card.kind-vessel { border-left-color: var(--ship); }
+    .chyron-card.kind-aircraft { border-left-color: var(--air); }
+    .chyron-card.kind-helicopter { border-left-color: var(--heli); }
+    .chyron-card.kind-landmark { border-left-color: var(--landmark); }
+    .chyron-card.kind-synoptic { border-left-color: var(--synoptic); }
+    .chyron-card.kind-celestial { border-left-color: var(--celestial); }
+
+    .chyron-badges {
+      display: flex;
+      align-items: center;
+      gap: 0.55vw;
+      margin-bottom: 0.55vh;
+    }
+    .kind-badge {
+      display: inline-block;
+      padding: 0.22vh 0.58vw;
+      border-radius: 0.26vw;
+      font-size: 0.72vw;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      background: rgba(56, 189, 248, 0.20);
+      color: #7dd3fc;
+      border: 1px solid rgba(56, 189, 248, 0.42);
+    }
+    .kind-vessel .kind-badge {
+      background: rgba(16, 185, 129, 0.20);
+      color: #6ee7b7;
+      border-color: rgba(16, 185, 129, 0.45);
+    }
+    .kind-helicopter .kind-badge {
+      background: rgba(245, 158, 11, 0.22);
+      color: #fcd34d;
+      border-color: rgba(245, 158, 11, 0.48);
+    }
+    .kind-landmark .kind-badge {
+      background: rgba(167, 139, 250, 0.22);
+      color: #ddd6fe;
+      border-color: rgba(167, 139, 250, 0.45);
+    }
+    .kind-synoptic .kind-badge {
+      background: rgba(34, 211, 238, 0.18);
+      color: #a5f3fc;
+      border-color: rgba(34, 211, 238, 0.42);
+    }
+    .kind-celestial .kind-badge {
+      background: rgba(251, 191, 36, 0.22);
+      color: #fde68a;
+      border-color: rgba(251, 191, 36, 0.48);
+    }
+
+    .lock-badge {
+      display: none;
+      align-items: center;
+      gap: 0.32vw;
+      padding: 0.20vh 0.52vw;
+      border-radius: 0.26vw;
+      font-size: 0.68vw;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      background: rgba(16, 185, 129, 0.16);
+      color: #a7f3d0;
+      border: 1px solid rgba(16, 185, 129, 0.36);
+    }
+    .lock-badge.visible { display: inline-flex; }
+    .lock-dot {
+      width: 0.38vw;
+      height: 0.38vw;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 6px #10b981;
+    }
+
+    .chyron-title {
+      font-size: 1.72vw;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      line-height: 1.16;
+      color: #ffffff;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+      margin-bottom: 0.38vh;
+    }
+    .chyron-sub {
+      font-size: 0.98vw;
+      font-weight: 500;
+      color: #cbd5e1;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.32;
+    }
+    .chyron-next {
+      display: none;
+      margin-top: 0.68vh;
+      padding-top: 0.58vh;
+      border-top: 1px solid rgba(148, 163, 184, 0.20);
+      font-size: 0.84vw;
+      font-weight: 600;
+      color: #94a3b8;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.01em;
+    }
+    .chyron-next.visible {
+      display: block;
+    }
+    .chyron-next strong {
+      color: #e2e8f0;
+      font-weight: 700;
+    }
+    .slew-badge {
+      display: none;
+      align-items: center;
+      gap: 0.35vw;
+      padding: 0.22vh 0.58vw;
+      border-radius: 0.26vw;
+      font-size: 0.72vw;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      background: rgba(245, 158, 11, 0.24);
+      color: #fde68a;
+      border: 1px solid rgba(245, 158, 11, 0.55);
+    }
+    .slew-badge.visible {
+      display: inline-flex;
+    }
+  </style>
+</head>
+<body>
+  <!-- Top-Left Live Timestamp & Optical Zoom Readout -->
+  <div class="top-left-pill">
+    <span class="live-dot"></span>
+    <span>HUDSON RIVER LIVE</span>
+    <span class="sep-dot">·</span>
+    <span id="clockText">--:--:--</span>
+    <span class="sep-dot">·</span>
+    <span class="zoom-readout" id="zoomBadgeText">1.0× WIDE</span>
+  </div>
+
+  <!-- Top-Right Overview Inset Bezel & Live FOV Reticle (overlays OBS Video Capture Device 2 PiP) -->
+  <div class="inset-wrap" id="insetWrap">
+    <img class="inset-fallback-bg" id="insetFallbackBg" alt="" />
+    <canvas id="insetCanvas" width="896" height="504"></canvas>
+    <div class="inset-label">Wide Harbor Overview</div>
+  </div>
+
+  <!-- Bottom-Left Broadcast Chyron -->
+  <div class="chyron-card kind-synoptic" id="chyronCard">
+    <div class="chyron-badges">
+      <span class="slew-badge" id="slewBadge">⇢ SLEWING</span>
+      <span class="kind-badge" id="kindBadge">HARBOR OVERVIEW</span>
+      <span class="lock-badge" id="lockBadge"><span class="lock-dot"></span>AI TRACKING</span>
+    </div>
+    <div class="chyron-title" id="chyronTitle">HUDSON RIVER OBSERVATORY</div>
+    <div class="chyron-sub" id="chyronSub">Lower Manhattan, New York Harbor &amp; Jersey City</div>
+    <div class="chyron-next" id="chyronNext"></div>
+  </div>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("preview") === "1") {
+        document.body.classList.add("standalone-preview");
+        const bg = document.getElementById("insetFallbackBg");
+        setInterval(() => {
+          bg.src = "/api/cam_frame.jpg?t=" + Date.now();
+        }, 1200);
+        bg.src = "/api/cam_frame.jpg?t=" + Date.now();
+      }
+
+      const clockText = document.getElementById("clockText");
+      const zoomBadgeText = document.getElementById("zoomBadgeText");
+      const insetWrap = document.getElementById("insetWrap");
+      const insetCanvas = document.getElementById("insetCanvas");
+      const ctx = insetCanvas.getContext("2d");
+      const chyronCard = document.getElementById("chyronCard");
+      const slewBadge = document.getElementById("slewBadge");
+      const kindBadge = document.getElementById("kindBadge");
+      const lockBadge = document.getElementById("lockBadge");
+      const chyronTitle = document.getElementById("chyronTitle");
+      const chyronSub = document.getElementById("chyronSub");
+      const chyronNext = document.getElementById("chyronNext");
+
+      let latestState = null;
+      let dispU = 0.5, dispV = 0.5, dispW = 0.12, dispH = 0.12;
+      let goalU = 0.5, goalV = 0.5, goalW = 0.12, goalH = 0.12;
+      let cdActiveId = null;
+      let cdDeadlineMs = 0;
+      let cdMinShownSec = Infinity;
+      let cdLastCallsign = "";
+      let cdLastSec = -1;
+
+      function updateClock() {
+        try {
+          const now = new Date();
+          clockText.textContent = now.toLocaleTimeString("en-US", {
+            timeZone: "America/New_York",
+            hour: "numeric",
+            minute: "2-digit",
+            second: "2-digit",
+          }) + " ET";
+        } catch (_) {}
+      }
+      setInterval(updateClock, 500);
+      updateClock();
+
+      function panTiltToSynopticUV(panDeg, tiltDeg, hfovDeg) {
+        const hfov = (hfovDeg || 67.957) * Math.PI / 180.0;
+        const vfov = 2.0 * Math.atan(Math.tan(hfov * 0.5) * (9.0 / 16.0));
+        const u = 0.5 + Math.tan(panDeg * Math.PI / 180.0) / (2.0 * Math.tan(hfov * 0.5));
+        const v = 0.5 - Math.tan(tiltDeg * Math.PI / 180.0) / (2.0 * Math.tan(vfov * 0.5));
+        return [Math.max(0.0, Math.min(1.0, u)), Math.max(0.0, Math.min(1.0, v))];
+      }
+
+      function cleanSubtitle(raw) {
+        if (!raw) return "";
+        return String(raw).replace(/\s*\(-?\d+(?:\.\d+)?\s*dB(?:FS)?\)/gi, "").trim();
+      }
+
+      function applyState(st) {
+        latestState = st;
+        const hw = st.hw_ptz || {};
+        const ptz = st.ptz || {};
+        const vt = st.visual_tracker || {};
+        const cal = st.calibration || {};
+        const synHfov = cal.hfov_deg || 67.957;
+        const zoomX = Number(hw.zoom_x || ptz.zoom_x || 1.0);
+
+        zoomBadgeText.textContent = zoomX <= 1.25
+          ? "1.0× WIDE VIEW"
+          : `${zoomX.toFixed(zoomX >= 10 ? 0 : 1)}× OPTICAL`;
+
+        // Auto-hide top-right overview inset whenever zoomed out to 1x synoptic view
+        const act = st.active_target;
+        const mp = (!st.auto_mode && st.manual_point) ? st.manual_point : null;
+        const isSynoptic = (zoomX <= 1.35) || (act && act.kind === "synoptic" && zoomX <= 1.8);
+        insetWrap.classList.toggle("hidden-synoptic", isSynoptic);
+
+        // Compute PTZ FOV box inside the wide synoptic overview
+        let centerU = 0.5, centerV = 0.5;
+        if (mp && typeof mp.u === "number" && typeof mp.v === "number") {
+          centerU = mp.u;
+          centerV = mp.v;
+        } else if (act && typeof act.u === "number" && typeof act.v === "number") {
+          centerU = act.u;
+          centerV = act.v;
+        } else if (typeof ptz.pan_deg === "number") {
+          const uv = panTiltToSynopticUV(ptz.pan_deg, ptz.tilt_deg || 0.0, synHfov);
+          centerU = uv[0];
+          centerV = uv[1];
+        }
+        const ptzHfov = Math.max(2.67, 70.0 / Math.max(1.0, zoomX));
+        goalU = centerU;
+        goalV = centerV;
+        goalW = Math.min(1.0, Math.max(0.038, ptzHfov / synHfov));
+        goalH = Math.min(1.0, Math.max(0.038, goalW));
+
+        // Populate broadcast lower-third chyron
+        let kind = "synoptic";
+        let badge = "HARBOR OVERVIEW";
+        let title = "HUDSON RIVER HARBOR OVERVIEW";
+        let sub = "Lower Manhattan, New York Harbor & Jersey City · Live 4K Observatory";
+        let showAiLock = false;
+
+        if (mp) {
+          kind = mp.kind || "landmark";
+          badge = kind === "celestial"
+            ? "NIGHT SKY"
+            : (kind === "synoptic" ? "1× WIDE OVERVIEW" : (kind === "landmark" ? "HARBOR LANDMARK" : "LIVE VIEW"));
+          title = mp.label || "HUDSON RIVER";
+          const distStr = mp.dist_km ? ` · ${Number(mp.dist_km).toFixed(1)} km` : "";
+          sub = cleanSubtitle(mp.subtitle || "") + ((kind !== "celestial" && kind !== "synoptic") ? distStr : "");
+        } else if (act) {
+          kind = act.kind || "landmark";
+          title = act.callsign || "HUDSON RIVER";
+          const baseSub = cleanSubtitle(act.subtitle || "");
+          const distStr = act.dist_km ? `${Number(act.dist_km).toFixed(1)} km away` : "";
+          showAiLock = Boolean(act.cv_locked || (vt.locked && vt.active_target_id === act.id));
+
+          if (kind === "vessel") {
+            badge = String(title).includes("STATEN ISLAND FERRY") ? "STATEN ISLAND FERRY" : "MARITIME VESSEL";
+            const parts = [];
+            if (baseSub) parts.push(baseSub);
+            if (act.gs_kts >= 0.5) parts.push(`${Number(act.gs_kts).toFixed(1)} kt`);
+            if (act.length_m >= 8) parts.push(`${Math.round(act.length_m)}m hull`);
+            if (distStr) parts.push(distStr);
+            sub = parts.join("  ·  ");
+          } else if (kind === "helicopter" || kind === "aircraft") {
+            badge = kind === "helicopter" ? "HELICOPTER" : "AIRCRAFT";
+            const parts = [];
+            if (baseSub) parts.push(baseSub);
+            if (act.gs_kts >= 1) parts.push(`${Math.round(act.gs_kts)} kt`);
+            if (act.alt_ft > 0) parts.push(`Alt ${Number(act.alt_ft).toLocaleString()} ft`);
+            if (distStr) parts.push(distStr);
+            sub = parts.join("  ·  ");
+          } else if (kind === "synoptic") {
+            badge = "1× WIDE OVERVIEW";
+            sub = baseSub || "Lower Manhattan, New York Harbor & Jersey City";
+          } else {
+            badge = "HARBOR LANDMARK";
+            sub = [baseSub, distStr].filter(Boolean).join("  ·  ");
+          }
+        }
+
+        const isSlewing = Boolean(st.ptz_slewing);
+        chyronCard.className = `chyron-card kind-${kind}`;
+        slewBadge.classList.toggle("visible", isSlewing);
+        kindBadge.textContent = badge;
+        lockBadge.classList.toggle("visible", showAiLock && !isSlewing);
+        chyronTitle.textContent = isSlewing ? `Slewing to: ${title}` : title;
+        chyronSub.textContent = sub;
+
+        const curActId = st.active_target_id || "";
+        if (curActId !== cdActiveId) {
+          cdActiveId = curActId;
+          cdDeadlineMs = 0;
+          cdMinShownSec = Infinity;
+          cdLastCallsign = "";
+          cdLastSec = -1;
+        }
+
+        const nxt = (!isSlewing && st.auto_mode && st.next_target) ? st.next_target : null;
+        if (nxt && nxt.callsign && typeof nxt.in_seconds === "number") {
+          const nowMs = performance.now();
+          const srvRemMs = (typeof nxt.switch_in_s === "number" ? nxt.switch_in_s : nxt.in_seconds) * 1000.0;
+          const candDeadlineMs = nowMs + srvRemMs;
+          if (cdDeadlineMs <= 0 || candDeadlineMs > cdDeadlineMs + 8000) {
+            cdDeadlineMs = candDeadlineMs;
+            cdMinShownSec = Infinity;
+          } else {
+            // Strictly non-increasing deadline so AIS/poll jitter can NEVER make the countdown jump upward!
+            cdDeadlineMs = Math.min(cdDeadlineMs, candDeadlineMs + 250);
+          }
+          const rawSec = Math.max(1, Math.ceil((cdDeadlineMs - nowMs) / 1000.0));
+          const remSec = Math.min(cdMinShownSec, rawSec);
+          cdMinShownSec = remSec;
+
+          if (remSec !== cdLastSec || nxt.callsign !== cdLastCallsign) {
+            cdLastSec = remSec;
+            cdLastCallsign = nxt.callsign;
+            chyronNext.innerHTML = "";
+            const prefix = document.createTextNode("Next point of interest: ");
+            const strong = document.createElement("strong");
+            strong.textContent = nxt.callsign;
+            const suffix = document.createTextNode(` in ${remSec}s`);
+            chyronNext.appendChild(prefix);
+            chyronNext.appendChild(strong);
+            chyronNext.appendChild(suffix);
+          }
+          chyronNext.classList.add("visible");
+        } else {
+          cdLastSec = -1;
+          chyronNext.classList.remove("visible");
+        }
+      }
+
+      let pollInFlight = false;
+      async function poll() {
+        if (pollInFlight) return;
+        pollInFlight = true;
+        try {
+          const r = await fetch("/api/state", { cache: "no-store" });
+          if (r.ok) {
+            applyState(await r.json());
+          }
+        } catch (_) {
+        } finally {
+          pollInFlight = false;
+        }
+      }
+      setInterval(poll, 120);
+      poll();
+
+      function renderInset() {
+        const w = insetCanvas.width;
+        const h = insetCanvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        dispU += (goalU - dispU) * 0.22;
+        dispV += (goalV - dispV) * 0.22;
+        dispW += (goalW - dispW) * 0.22;
+        dispH += (goalH - dispH) * 0.22;
+
+        // Subtle vignette along top edge so label stays crisp over bright sky
+        const grad = ctx.createLinearGradient(0, 0, 0, h * 0.22);
+        grad.addColorStop(0, "rgba(5, 8, 15, 0.45)");
+        grad.addColorStop(1, "rgba(5, 8, 15, 0.0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h * 0.22);
+
+        // Plot live AIS & ADS-B dots inside the wide overview inset
+        if (latestState && Array.isArray(latestState.targets)) {
+          for (const t of latestState.targets) {
+            if (typeof t.u !== "number" || typeof t.v !== "number") continue;
+            const tx = t.u * w;
+            const ty = t.v * h;
+            const isAct = latestState.active_target_id === t.id;
+            ctx.beginPath();
+            ctx.arc(tx, ty, isAct ? 6.5 : 4.2, 0, Math.PI * 2);
+            ctx.fillStyle = t.kind === "vessel"
+              ? "#10b981"
+              : (t.kind === "helicopter" ? "#f59e0b" : "#38bdf8");
+            ctx.fill();
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = "rgba(0,0,0,0.75)";
+            ctx.stroke();
+          }
+        }
+
+        // Draw animated cyan PTZ Field-of-View rectangle + subtle outside dim
+        const bw = Math.max(26, dispW * w);
+        const bh = Math.max(16, dispH * h);
+        const bx = Math.max(2, Math.min(w - bw - 2, dispU * w - bw * 0.5));
+        const by = Math.max(2, Math.min(h - bh - 2, dispV * h - bh * 0.5));
+
+        ctx.save();
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 3.0;
+        ctx.shadowColor = "rgba(56, 189, 248, 0.75)";
+        ctx.shadowBlur = 10;
+        ctx.strokeRect(bx, by, bw, bh);
+
+        // Crosshair ticks on the PTZ FOV rectangle
+        const cx = bx + bw * 0.5;
+        const cy = by + bh * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(cx - 7, cy); ctx.lineTo(cx + 7, cy);
+        ctx.moveTo(cx, cy - 7); ctx.lineTo(cx, cy + 7);
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.restore();
+
+        requestAnimationFrame(renderInset);
+      }
+      requestAnimationFrame(renderInset);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <meta name="theme-color" content="#05080d" />
+
+  <title>Hudson River Zoom — Live 30× PTZ Observatory</title>
+  <meta name="description" content="Interactive 30× optical zoom observatory over the Hudson River, New York Harbor, and the Manhattan night sky." />
+
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/zoom/zoom.css" />
+  <script defer src="https://stats.hudsonriver.live/t.js"></script>
+</head>
+<body>
+  <div class="zoom-app" id="zoomApp">
+    <!-- Slim Top Glass Bar -->
+    <header class="top-bar">
+      <div class="brand-group">
+        <div class="live-pill" id="streamBadge" title="Live PTZ stream status">
+          <span class="live-dot"></span>
+          <span id="streamBadgeText">LIVE</span>
+        </div>
+        <div class="brand-titles">
+          <h1 class="brand-name">Hudson River <span class="accent-tag">30× Zoom</span></h1>
+          <span class="brand-sub hide-sm" id="ptzTelemetryText">PAN +0.0° · TILT +0.0° · 1.0×</span>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <button class="ctrl-btn mode-btn active" id="btnAutoDirector" type="button" title="Autonomous AI broadcast director tracking Hudson vessels &amp; aircraft">
+          <span class="mode-dot"></span>
+          <span id="autoDirectorLabel">Auto-Director</span>
+        </button>
+
+        <button class="ctrl-btn hide-xs" id="btnNextTarget" type="button" title="Cycle Auto-Director to next vessel or aircraft">
+          Next ⏭
+        </button>
+
+        <button class="ctrl-btn btn-enhance" id="btnEnhance" type="button" title="Capture a 4K burst, de-warp atmospheric turbulence, stack, and sharpen!">
+          ✨ Enhance!
+        </button>
+
+        <button class="ctrl-btn" id="btnLibrary" type="button" title="Browse library of Enhanced 4K captures">
+          🖼 <span id="libraryBtnLabel">Library</span>
+        </button>
+
+        <button class="ctrl-btn hide-sm" id="btnFinderToggle" type="button" aria-pressed="true" title="Toggle wide-angle harbor finder map (W)">
+          Finder
+        </button>
+
+        <a class="ctrl-btn ctrl-btn-yt hidden" id="ytZoomLink" href="#" target="_blank" rel="noopener noreferrer" title="Watch or share standalone Zoom stream on YouTube">
+          YouTube ↗
+        </a>
+
+        <button class="ctrl-btn icon-only hide-xs" id="btnFullscreen" type="button" title="Fullscreen (F)">
+          ⛶
+        </button>
+      </div>
+    </header>
+
+    <!-- Enhance Live Progress Banner -->
+    <div class="enhance-banner hidden" id="enhanceBanner">
+      <div class="enhance-banner-inner">
+        <span class="enhance-spinner"></span>
+        <span id="enhanceBannerText">Enhancing 4K burst…</span>
+        <div class="enhance-progress-track">
+          <div class="enhance-progress-fill" id="enhanceProgressFill" style="width: 5%;"></div>
+        </div>
+        <span class="mono" id="enhancePctText">5%</span>
+      </div>
+    </div>
+
+    <!-- Main 16:9 Zoom Cinema Stage -->
+    <main class="stage-area" id="stageArea">
+      <div class="video-frame" id="videoFrame">
+        <!-- Layer 1: 1080p60 YouTube Ultra-Low Latency Stream (when active) -->
+        <div id="ytZoomWrap" class="yt-wrap hidden">
+          <div id="ytZoomPlayer"></div>
+        </div>
+
+        <!-- Layer 2: Double-buffered Low-Latency Optical Frame (active before YouTube stream starts & briefly during slews) -->
+        <div id="opticalLayer" class="optical-layer">
+          <img id="optImgA" class="opt-img visible" alt="Live Sony PTZ optical feed" draggable="false" />
+          <img id="optImgB" class="opt-img" alt="" draggable="false" />
+        </div>
+
+        <!-- Layer 3: Click-to-Center Interactive Surface (passes YouTube bottom bar clicks cleanly) -->
+        <div id="clickSurface" class="click-surface" title="Click anywhere in frame to center the 30× camera on that spot">
+          <div id="clickRipple" class="click-ripple hidden"></div>
+        </div>
+
+        <!-- Slewing / Instant Preview Pill -->
+        <div id="slewPill" class="slew-pill hidden">
+          <span class="slew-dot"></span>
+          <span id="slewPillText">Slewing optical zoom…</span>
+        </div>
+
+        <!-- Toast Feedback -->
+        <div id="toastPill" class="toast-pill hidden"></div>
+
+        <!-- Floating Optical Zoom Strip & Gentle Nudge Pad (Right Edge) -->
+        <div class="stage-controls-right">
+          <div class="zoom-pill-group horizontal" role="group" aria-label="Optical Zoom">
+            <button class="z-btn active" data-z="0" type="button" title="Recommended target zoom">Auto</button>
+            <button class="z-btn" data-z="1" type="button" title="Full wide 1× optical view">1×</button>
+            <button class="z-btn" data-z="3" type="button">3×</button>
+            <button class="z-btn" data-z="8" type="button">8×</button>
+            <button class="z-btn" data-z="15" type="button">15×</button>
+            <button class="z-btn" data-z="22" type="button">22×</button>
+            <button class="z-btn" data-z="30" type="button">30×</button>
+          </div>
+
+          <div class="nudge-pad" aria-label="Fine pan/tilt nudge">
+            <button class="nudge-btn n-up" data-sx="0" data-sy="0.32" type="button" title="Tilt up (↑)">▲</button>
+            <button class="nudge-btn n-left" data-sx="-0.32" data-sy="0" type="button" title="Pan left (←)">◀</button>
+            <button class="nudge-btn n-right" data-sx="0.32" data-sy="0" type="button" title="Pan right (→)">▶</button>
+            <button class="nudge-btn n-down" data-sx="0" data-sy="-0.32" type="button" title="Tilt down (↓)">▼</button>
+          </div>
+        </div>
+
+        <!-- Corner Wide-Angle Harbor Finder PiP (click anywhere on wide harbor to jump PTZ) -->
+        <div class="finder-pip" id="finderPip">
+          <div class="finder-header">
+            <span>Wide Harbor Finder · Click to Point</span>
+            <button id="btnFinderClose" type="button" title="Hide finder (W)">✕</button>
+          </div>
+          <div class="finder-canvas-wrap" id="finderWrap">
+            <img id="finderBgImg" alt="Wide Hudson River overview" draggable="false" />
+            <canvas id="finderCanvas" width="640" height="360"></canvas>
+          </div>
+        </div>
+
+        <!-- Lower-Third Broadcast Target Chyron -->
+        <div class="chyron" id="chyronCard">
+          <div class="chyron-top">
+            <span class="chyron-badge" id="chyronBadge">AUTO</span>
+            <span class="chyron-title" id="chyronTitle">HUDSON RIVER LIVE CORRIDOR</span>
+          </div>
+          <div class="chyron-sub" id="chyronSub">Connecting to 30× PTZ Observatory…</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Bottom Interactive Pointing Dock (Live Vessels/Aircraft + Landmarks + Celestial) -->
+    <section class="pointing-dock" aria-label="Camera Pointing Targets">
+      <!-- Row 1: Live AIS Ships & ADS-B Aircraft -->
+      <div class="dock-row">
+        <span class="dock-label">Live Traffic</span>
+        <div class="chip-scroll" id="liveTargetsRow">
+          <span class="dock-empty">Scanning AIS vessels &amp; ADS-B aircraft…</span>
+        </div>
+      </div>
+
+      <!-- Row 2: Harbor Landmarks & Night Sky -->
+      <div class="dock-row">
+        <span class="dock-label">Landmarks</span>
+        <div class="chip-scroll" id="presetsRow"></div>
+        <span class="dock-divider"></span>
+        <span class="dock-label sky-label">Sky</span>
+        <div class="chip-scroll sky-scroll" id="celestialRow"></div>
+      </div>
+    </section>
+
+    <!-- Persistent Enhance! Library Gallery Modal -->
+    <div class="modal-backdrop hidden" id="libraryModal" role="dialog" aria-modal="true" aria-labelledby="libModalHeading">
+      <div class="library-panel">
+        <div class="modal-header">
+          <div>
+            <h2 id="libModalHeading">✨ Enhanced Image Library</h2>
+            <p class="modal-sub">4K planetary lucky-imaging, atmospheric turbulence de-warping &amp; Richardson-Lucy wavelet deconvolution</p>
+          </div>
+          <div class="modal-header-actions">
+            <div class="filter-tabs" id="libFilterTabs">
+              <button class="ftab active" data-filter="all" type="button">All</button>
+              <button class="ftab" data-filter="landmark" type="button">Landmarks</button>
+              <button class="ftab" data-filter="celestial" type="button">Sky &amp; Planets</button>
+              <button class="ftab" data-filter="vessel" type="button">Traffic</button>
+            </div>
+            <button class="ctrl-btn" id="btnCloseLibrary" type="button">✕ Close</button>
+          </div>
+        </div>
+        <div class="library-grid" id="libraryGrid"></div>
+      </div>
+    </div>
+
+    <!-- Interactive 4K Before / After Split-Wipe & Pixel-Peep Viewer Modal -->
+    <div class="modal-backdrop hidden" id="compareModal" role="dialog" aria-modal="true" aria-labelledby="cmpTitle">
+      <div class="compare-panel">
+        <div class="modal-header">
+          <div class="cmp-title-wrap">
+            <h2 id="cmpTitle">ENHANCE! Comparison</h2>
+            <span class="cmp-stats mono" id="cmpStats"></span>
+          </div>
+          <div class="modal-header-actions">
+            <button class="ctrl-btn" id="btnBackToLibrary" type="button">← Library</button>
+            <div class="zoom-pill-group horizontal">
+              <button class="cmp-zbtn active" data-cz="1" type="button">1× Fit</button>
+              <button class="cmp-zbtn" data-cz="2.5" type="button">2.5×</button>
+              <button class="cmp-zbtn" data-cz="5" type="button">5× Pixel</button>
+            </div>
+            <button class="ctrl-btn" id="btnSharePhoto" type="button" title="Copy direct link to this Enhanced capture">🔗 Share</button>
+            <a class="ctrl-btn btn-dl" id="cmpDownloadLink" href="#" download="hudson_enhanced_4k.png">⬇ 4K PNG</a>
+            <button class="ctrl-btn" id="btnCloseCompare" type="button">✕</button>
+          </div>
+        </div>
+
+        <div class="compare-canvas-wrap" id="compareCanvasWrap">
+          <canvas id="compareCanvas" width="1920" height="1080"></canvas>
+          <div class="cmp-loading hidden" id="cmpLoading">Loading 4K stack…</div>
+        </div>
+
+        <div class="compare-footer">
+          <span class="hide-sm">Drag divider to wipe <strong>Single Raw Frame (Left)</strong> vs. <strong>Enhanced Stack (Right)</strong> · Scroll or magnify up to 5× &amp; drag</span>
+          <div class="wipe-slider-group">
+            <span>Before</span>
+            <input id="wipeSlider" type="range" min="0" max="1000" value="500" />
+            <span>Enhanced</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/zoom/zoom.js"></script>
+</body>
+</html>

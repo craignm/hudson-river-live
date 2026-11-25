@@ -62,7 +62,86 @@ def _parse_aisstream_utc(raw_utc, fallback_now: float) -> float:
         return fallback_now
 
 
-def classify_ais_ship_type(type_code: int, length_m: float, name: str):
+# Vessels with faulty/offset AIS GPS transponders that should be completely ignored
+BLACKLISTED_VESSEL_MMSIS = frozenset(
+    {
+        "367415390",  # EMPIRE STATE (NY Waterway ferry — AIS GPS position consistently wrong)
+    }
+)
+BLACKLISTED_VESSEL_NAMES = (
+    "EMPIRE STATE",
+)
+
+
+def is_blacklisted_vessel(mmsi: str, name: str = "") -> bool:
+    """Returns True if `(mmsi, name)` is on the faulty-AIS vessel ignore list."""
+    mmsi_s = str(mmsi or "").strip()
+    if mmsi_s in BLACKLISTED_VESSEL_MMSIS:
+        return True
+    uname = " ".join((name or "").upper().split())
+    if not uname:
+        return False
+    return any(uname == b or uname.startswith(b + " ") for b in BLACKLISTED_VESSEL_NAMES)
+
+
+STATEN_ISLAND_FERRIES_BY_MMSI = {
+    "368089980": ("SSG MICHAEL H. OLLIS", 97.5),
+    "368143060": ("SANDY GROUND", 97.5),
+    "368217570": ("DOROTHY DAY", 97.5),
+    "366952790": ("GUY V. MOLINARI", 94.5),
+    "366952870": ("SEN. JOHN J. MARCHI", 94.5),
+    "366952890": ("SPIRIT OF AMERICA", 94.5),
+    "367000140": ("SAMUEL I. NEWHOUSE", 94.5),
+    "367000130": ("ANDREW J. BARBERI", 94.5),
+    "367000120": ("ALICE AUSTEN", 63.1),
+    "367000110": ("JOHN A. NOBLE", 63.1),
+}
+
+STATEN_ISLAND_FERRY_NAME_PATTERNS = (
+    ("MICHAEL H. OLLIS", "SSG MICHAEL H. OLLIS", 97.5),
+    ("MICHAEL H OLLIS", "SSG MICHAEL H. OLLIS", 97.5),
+    ("SSG OLLIS", "SSG MICHAEL H. OLLIS", 97.5),
+    ("OLLIS", "SSG MICHAEL H. OLLIS", 97.5),
+    ("SANDY GROUND", "SANDY GROUND", 97.5),
+    ("DOROTHY DAY", "DOROTHY DAY", 97.5),
+    ("MOLINARI", "GUY V. MOLINARI", 94.5),
+    ("MARCHI", "SEN. JOHN J. MARCHI", 94.5),
+    ("SPIRIT OF AMERICA", "SPIRIT OF AMERICA", 94.5),
+    ("SAMUEL I. NEWHOUSE", "SAMUEL I. NEWHOUSE", 94.5),
+    ("SAMUEL I NEWHOUSE", "SAMUEL I. NEWHOUSE", 94.5),
+    ("NEWHOUSE", "SAMUEL I. NEWHOUSE", 94.5),
+    ("ANDREW J. BARBERI", "ANDREW J. BARBERI", 94.5),
+    ("ANDREW J BARBERI", "ANDREW J. BARBERI", 94.5),
+    ("ALICE AUSTEN", "ALICE AUSTEN", 63.1),
+    ("JOHN A. NOBLE", "JOHN A. NOBLE", 63.1),
+    ("JOHN A NOBLE", "JOHN A. NOBLE", 63.1),
+)
+
+
+def identify_staten_island_ferry(mmsi: str, name: str):
+    """
+    If `(mmsi, name)` belongs to the NYC DOT Staten Island Ferry fleet, returns
+    `(display_callsign, canonical_vessel_name, length_m)`; otherwise returns `None`.
+    """
+    mmsi_s = str(mmsi or "").strip()
+    if mmsi_s in STATEN_ISLAND_FERRIES_BY_MMSI:
+        canon, hull_m = STATEN_ISLAND_FERRIES_BY_MMSI[mmsi_s]
+        return f"STATEN ISLAND FERRY · {canon}", canon, hull_m
+    uname = " ".join((name or "").upper().replace(".", ". ").split())
+    uname_compact = (name or "").upper()
+    if "CIRCLE LINE" in uname_compact:
+        return None
+    for pat, canon, hull_m in STATEN_ISLAND_FERRY_NAME_PATTERNS:
+        if pat in uname_compact or pat in uname:
+            return f"STATEN ISLAND FERRY · {canon}", canon, hull_m
+    return None
+
+
+def classify_ais_ship_type(type_code: int, length_m: float, name: str, mmsi: str = ""):
+    si_match = identify_staten_island_ferry(mmsi, name)
+    if si_match is not None:
+        _, _, si_len = si_match
+        return "NYC DOT Staten Island Ferry", max(length_m, si_len), 2.85
     uname = (name or "").upper()
     if "FDNY" in uname or "FIRE" in uname:
         return "FDNY Fireboat", max(length_m, 32.0), 2.9
@@ -218,6 +297,15 @@ class AISStreamTracker:
                 self.static_cache = data.get("static_cache") or {}
                 for mmsi, v in (data.get("vessels") or {}).items():
                     if now - v.get("pos_epoch", 0.0) < 480.0:
+                        st_init = self.static_cache.get(mmsi) or {
+                            "name": v.get("callsign", ""),
+                            "type_code": 0,
+                            "length_m": float(v.get("length_m") or 0.0),
+                            "dest": "",
+                        }
+                        if is_blacklisted_vessel(mmsi, st_init.get("name") or v.get("callsign", "")):
+                            continue
+                        self._refresh_vessel_metadata(v, st_init)
                         self.vessels[mmsi] = v
                 if src_path == LEGACY_DROPBOX_CACHE_PATH:
                     self._flush_disk_cache()
@@ -358,10 +446,10 @@ class AISStreamTracker:
                 return
 
             nav_status = pr.get("NavigationalStatus")
-            is_moored_status = nav_status in (1, 5, 6)  # 1=At anchor, 5=Moored, 6=Aground
-
-            sog = float(pr.get("Sog") or 0.0)
-            if sog > 100.0 or is_moored_status:  # 102.3 = AIS "not available" sentinel
+            raw_sog = float(pr.get("Sog") or 0.0)
+            sog = 0.0 if raw_sog > 100.0 else raw_sog  # 102.3 = AIS "not available" sentinel
+            is_moored_status = (nav_status in (1, 5, 6)) and (sog < 1.5)
+            if is_moored_status:
                 sog = 0.0
             cog = float(pr.get("Cog") or 0.0)
             if cog >= 360.0:
@@ -373,6 +461,9 @@ class AISStreamTracker:
 
             tx_epoch = _parse_aisstream_utc(meta.get("time_utc"), now)
             name = st["name"] or meta_name or f"VESSEL {mmsi}"
+            if is_blacklisted_vessel(mmsi, name):
+                self.vessels.pop(mmsi, None)
+                return
             vessel = {
                 "id": f"ais:{mmsi}",
                 "mmsi": mmsi,
@@ -404,10 +495,14 @@ class AISStreamTracker:
 
     @staticmethod
     def _refresh_vessel_metadata(vessel: dict, st: dict):
+        mmsi_s = str(vessel.get("mmsi") or "")
         if st["name"]:
             vessel["callsign"] = st["name"]
+        si_match = identify_staten_island_ferry(mmsi_s, vessel.get("callsign", ""))
+        if si_match is not None:
+            vessel["callsign"] = si_match[0]
         type_label, est_len, rarity = classify_ais_ship_type(
-            st["type_code"], st["length_m"], vessel["callsign"]
+            st["type_code"], st["length_m"], vessel["callsign"], mmsi=mmsi_s
         )
         # Moored / docked boats (0.0-0.4 kts) get much lower priority than underway river traffic
         if vessel["gs_kts"] < 0.5:
@@ -422,6 +517,6 @@ class AISStreamTracker:
         with self.lock:
             return [
                 dict(v)
-                for v in self.vessels.values()
-                if now - v["pos_epoch"] < 480.0
+                for mmsi, v in self.vessels.items()
+                if now - v["pos_epoch"] < 480.0 and not is_blacklisted_vessel(mmsi, v.get("callsign", ""))
             ]

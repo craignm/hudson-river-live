@@ -32,7 +32,8 @@
     body.obs-mode header,
     body.obs-mode .synoptic-card,
     body.obs-mode .bottom-grid,
-    body.obs-mode .ptz-card-header { display: none !important; }
+    body.obs-mode .ptz-card-header,
+    body.obs-mode .ptz-presets-bar { display: none !important; }
     body.obs-mode .main-grid { display: block; padding: 0; }
     body.obs-mode .ptz-card { border: none; border-radius: 0; background: #000; }
     body.obs-mode .viewport-wrap { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; }
@@ -41,6 +42,7 @@
     body.hud-mode header,
     body.hud-mode .bottom-grid,
     body.hud-mode .card-header,
+    body.hud-mode .ptz-presets-bar,
     body.hud-mode #ptzCanvas,
     body.hud-mode #ptzHudTop { display: none !important; }
     body.hud-mode.no-chyron #chyron { display: none !important; }
@@ -156,6 +158,70 @@
     .chyron.heli { border-left-color: var(--heli); }
     .chyron.vessel { border-left-color: var(--ship); }
     .chyron.cv { border-left-color: var(--cv); }
+    .chyron.landmark { border-left-color: #a78bfa; }
+    .chyron.celestial { border-left-color: #fbbf24; }
+
+    .ptz-presets-sep {
+      width: 1px;
+      height: 16px;
+      background: var(--border);
+      margin: 0 3px;
+    }
+    .preset-btn.celestial-btn {
+      border-color: rgba(251, 191, 36, 0.48);
+      color: #fde68a;
+    }
+    .preset-btn.celestial-btn:hover { border-color: #fbbf24; }
+    .preset-btn.celestial-btn.active {
+      background: rgba(251, 191, 36, 0.22);
+      border-color: #fbbf24;
+      color: #fef3c7;
+      font-weight: 600;
+    }
+    .preset-btn.celestial-btn.out-of-view {
+      opacity: 0.42;
+      border-color: var(--border);
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+
+    .ptz-presets-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      background: rgba(15, 22, 35, 0.72);
+      border-bottom: 1px solid var(--border);
+      font-size: 11.5px;
+    }
+    .ptz-presets-label {
+      color: var(--muted);
+      font-weight: 600;
+      margin-right: 2px;
+      white-space: nowrap;
+    }
+    .preset-btn {
+      padding: 4px 9px;
+      font-size: 11.5px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      white-space: nowrap;
+    }
+    .preset-btn:hover { border-color: #a78bfa; }
+    .preset-btn.active {
+      background: rgba(167, 139, 250, 0.22);
+      border-color: #a78bfa;
+      color: #ddd6fe;
+      font-weight: 600;
+    }
+    .preset-btn.resume-auto {
+      border-color: rgba(16, 185, 129, 0.55);
+      color: #6ee7b7;
+    }
+    .preset-btn.resume-auto:hover { border-color: #10b981; }
     .chyron-top {
       display: flex;
       align-items: baseline;
@@ -237,6 +303,65 @@
       margin-bottom: 3px;
     }
     .calib-field input { width: 100%; cursor: text; }
+
+    .btn-lucky {
+      background: linear-gradient(135deg, rgba(167, 139, 250, 0.22), rgba(56, 189, 248, 0.18));
+      border-color: rgba(167, 139, 250, 0.72);
+      color: #ede9fe;
+      font-weight: 600;
+    }
+    .btn-lucky:hover { border-color: #c4b5fd; background: rgba(167, 139, 250, 0.30); }
+    .btn-lucky:disabled { opacity: 0.75; cursor: wait; }
+
+    .lucky-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 9000;
+      background: rgba(5, 8, 15, 0.86);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+    .lucky-modal.open { display: flex; }
+    body.obs-mode .lucky-modal, body.hud-mode .lucky-modal { display: none !important; }
+    .lucky-dialog {
+      width: min(1380px, 96vw);
+      max-height: 94vh;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 22px 60px rgba(0, 0, 0, 0.75);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .lucky-header, .lucky-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 15px;
+      background: var(--panel-2);
+    }
+    .lucky-header { border-bottom: 1px solid var(--border); }
+    .lucky-footer { border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+    .lucky-canvas-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      max-height: calc(94vh - 116px);
+      background: #04070c;
+      overflow: hidden;
+      user-select: none;
+    }
+    #luckyCompareCanvas {
+      width: 100%;
+      height: 100%;
+      cursor: ew-resize;
+    }
   </style>
 </head>
 <body>
@@ -276,7 +401,7 @@
     <!-- Left: Wide Synoptic Spotter -->
     <section class="card synoptic-card">
       <div class="card-header">
-        <div><strong>1. Synoptic Spotter</strong> — Insta360 Link 2C (68.0° HFOV, 2560×1440 GPS-Locked)</div>
+        <div><strong>1. Synoptic Spotter</strong> — Insta360 Link 2C Pro (68.0° HFOV, 3840×2160 4K30 GPS-Locked)</div>
         <div>Click any boat/aircraft or click water/sky to slew PTZ</div>
       </div>
       <div class="viewport-wrap">
@@ -287,15 +412,39 @@
     <!-- Right: Virtual / Hardware PTZ Output -->
     <section class="card ptz-card">
       <div class="card-header ptz-card-header">
-        <div><strong>2. PTZ Broadcast Output</strong> — PID + Velocity Feed-Forward</div>
+        <div id="ptzHeaderLabel"><strong>2. PTZ Broadcast Output</strong> — Sony SRG-A40 4K 30× + Velocity Feed-Forward</div>
         <div class="controls">
+          <button id="btnLuckyStack" class="btn-lucky" type="button" title="Capture 28 lossless 4K frames, de-warp atmospheric turbulence, sigma-clip stack, and run Richardson-Lucy wavelet deconvolution">Enhance!</button>
+          <button id="btnViewLastStack" type="button" title="Browse saved Enhance! captures and interactive Before/After comparisons">🖼 Library</button>
+          <button id="btnOnePushAf" type="button" title="Run bounded +-55 tick optical micro-trim around 3D object distance (immune to window glass)">Fine Trim</button>
+          <button id="btnAutoAf" type="button" title="Reset to pure 3D distance + zoom manual focus curve (auto-focus=0)">3D Dist</button>
           <span>Zoom:</span>
           <button class="zoom-btn active" data-z="0">Auto</button>
+          <button class="zoom-btn" data-z="1">1x</button>
           <button class="zoom-btn" data-z="5">5x</button>
           <button class="zoom-btn" data-z="10">10x</button>
           <button class="zoom-btn" data-z="20">20x</button>
           <button class="zoom-btn" data-z="30">30x</button>
         </div>
+      </div>
+      <div id="ptzPresetsBar" class="ptz-presets-bar">
+        <span class="ptz-presets-label">Landmarks:</span>
+        <button class="preset-btn" type="button" data-preset="colgate_clock" title="Jersey City Waterfront • 50-ft Historic Octagonal Dial (30x)">Colgate Clock</button>
+        <button class="preset-btn" type="button" data-preset="waters_soul" title="Newport Pier, Jersey City • Jaume Plensa 80-ft Sculpture (22x)">Water's Soul</button>
+        <button class="preset-btn" type="button" data-preset="soccer_pitch" title="Gansevoort Peninsula Athletic Field • South of Little Island (10x)">Soccer Pitch</button>
+        <button class="preset-btn" type="button" data-preset="statue_of_liberty" title="Liberty Island • Upper New York Bay (30x)">Statue of Liberty</button>
+        <button class="preset-btn" type="button" data-preset="ellis_island" title="Historic Great Hall • Upper New York Bay (24x)">Ellis Island</button>
+        <button class="preset-btn" type="button" data-preset="little_island" title="Pier 55 Tulip Park &amp; Amphitheatre (6x)">Little Island</button>
+        <button class="preset-btn" type="button" data-preset="one_wtc" title="One World Observatory &amp; Spire • Lower Manhattan (15x)">1 World Trade</button>
+        <button class="preset-btn" type="button" data-preset="verrazzano" title="Verrazzano-Narrows Suspension Towers • 15.7 km (30x)">Verrazzano Bridge</button>
+        <button class="preset-btn" type="button" data-preset="whitney_museum" title="Renzo Piano Cantilevered Terraces • Gansevoort St (10x)">Whitney Museum</button>
+        <span class="ptz-presets-sep"></span>
+        <span class="ptz-presets-label">Sky:</span>
+        <button class="preset-btn celestial-btn" type="button" data-celestial="moon" title="Live Meeus lunar ephemeris &amp; sidereal tracking">🌙 Moon</button>
+        <button class="preset-btn celestial-btn" type="button" data-celestial="saturn" title="Live Saturn ephemeris &amp; sidereal tracking">🪐 Saturn</button>
+        <button class="preset-btn celestial-btn" type="button" data-celestial="jupiter" title="Live Jupiter ephemeris &amp; sidereal tracking">🪐 Jupiter</button>
+        <button class="preset-btn celestial-btn" type="button" data-celestial="venus" title="Live Venus ephemeris &amp; sidereal tracking">✨ Venus</button>
+        <button id="btnResumeAutoPreset" class="preset-btn resume-auto" type="button" style="display:none;" title="Return PTZ camera to autonomous AIS/ADS-B tracking">↺ Auto-Director</button>
       </div>
       <div class="viewport-wrap">
         <canvas id="ptzCanvas" width="1920" height="1080"></canvas>
@@ -338,8 +487,45 @@
 
     <div class="card">
       <div class="card-header">
-        <div><strong>3D Window Calibration</strong> (Chelsea View)</div>
-        <button id="btnSaveCalib">Save Pose</button>
+        <div><strong>3D Window &amp; PTZ Hardware Calibration</strong></div>
+        <div class="controls">
+          <select id="ptzCameraModelSelect" title="Switch active PTZ hardware camera &amp; OBS capture input (preserves each camera's 3D calibration profile)">
+            <option value="sony_a40" selected>PTZ: Sony SRG-A40 (Cam Link 4K)</option>
+            <option value="fomako">PTZ: FoMaKo 30x (USB 3.0)</option>
+          </select>
+          <button id="btnAutoCalibPtz" type="button" title="Automatically detect 8 NYC/JC landmarks in 4K Synoptic, lock PTZ at 4x -> 10x -> 30x, and fit 3D SO(3) alignment">Auto-Calibrate 30x</button>
+          <button id="btnSaveCalib">Save Pose</button>
+        </div>
+      </div>
+      <div id="sonyAuthBanner" style="padding: 7px 12px; font-size: 11.5px; background: rgba(56, 189, 248, 0.08); border-bottom: 1px solid rgba(39,52,73,0.6); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px;">
+        <span id="sonyAuthStatusText">Sony SRG-A40 (<code>192.168.1.136</code>): checking…</span>
+        <div class="controls" style="gap: 6px;">
+          <input id="sonyHostInput" type="text" value="192.168.1.136" placeholder="192.168.1.136" style="width: 115px;" title="Sony SRG-A40 Ethernet IP" />
+          <input id="sonyPassInput" type="password" placeholder="Sony admin password" style="width: 145px;" title="Admin password configured on http://192.168.1.136/" />
+          <button id="btnSaveSonyAuth" type="button">Save Sony Login</button>
+          <a id="sonyWebUiLink" href="http://192.168.1.136/" target="_blank" style="text-decoration:none;"><button type="button" title="Open Sony SRG-A40 built-in web admin UI">Sony UI ↗</button></a>
+        </div>
+      </div>
+      <div id="ptzYoutubeBanner" style="padding: 7px 12px; font-size: 11.5px; background: rgba(239, 68, 68, 0.07); border-bottom: 1px solid rgba(39,52,73,0.6); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px;">
+        <span id="ptzYoutubeStatusText">YouTube PTZ Broadcast (Chyron + Overview Inset): standby</span>
+        <div class="controls" style="gap: 6px;">
+          <input id="ptzYoutubeKeyInput" type="password" placeholder="YouTube Stream Key" style="width: 155px;" title="Separate YouTube Live Stream Key for PTZ + Chyrons + Overview Inset" />
+          <button id="btnSavePtzYoutubeKey" type="button">Save Key</button>
+          <button id="btnTogglePtzYoutube" type="button">YT Stream: OFF</button>
+          <a href="/ptz_yt_hud.html?preview=1" target="_blank" style="text-decoration:none;"><button type="button" title="Preview PTZ YouTube Chyron + Overview Inset overlay">YT HUD ↗</button></a>
+        </div>
+      </div>
+      <div id="monthlyYoutubeBanner" style="padding: 7px 12px; font-size: 11.5px; background: rgba(16, 185, 129, 0.08); border-bottom: 1px solid rgba(39,52,73,0.6); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px;">
+        <span id="monthlyYoutubeStatusText">Monthly 4K YouTube VODs (Dawn / Morning / Afternoon / Sunset / Night): checking…</span>
+        <div class="controls" style="gap: 6px;">
+          <button id="btnToggleMonthlyYt" type="button" class="active">Monthly 5×: ON</button>
+        </div>
+      </div>
+      <div id="ptzCalibBanner" style="padding: 7px 12px; font-size: 11.5px; color: var(--muted); border-bottom: 1px solid rgba(39,52,73,0.6); display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+        <span id="ptzCalibStatusText">PTZ Auto-Calibration: Ready</span>
+        <label style="display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer;" title="Automatically re-verify 30x bore-sight &amp; focus once daily in clear midday daylight">
+          <input id="chkDailyCalib" type="checkbox" checked style="width: auto; margin: 0;" /> Daily Auto
+        </label>
       </div>
       <div class="calib-grid">
         <div class="calib-field">
@@ -371,15 +557,60 @@
           <input id="calLead" type="number" step="0.1" value="0.9" />
         </div>
         <div class="calib-field">
-          <label>Simulated Scale Guide</label>
+          <label>PTZ Pan Offset (°)</label>
+          <input id="calPtzPan" type="number" step="0.01" value="0.00" />
+        </div>
+        <div class="calib-field">
+          <label>PTZ Tilt Offset (°)</label>
+          <input id="calPtzTilt" type="number" step="0.01" value="0.00" />
+        </div>
+        <div class="calib-field">
+          <label>PTZ Base Roll (°)</label>
+          <input id="calPtzRoll" type="number" step="0.01" value="0.00" />
+        </div>
+        <div class="calib-field">
+          <label>PTZ Viewport Overlay</label>
           <select id="silhouetteMode">
-            <option value="assist">Show True-Scale Optical Guide</option>
-            <option value="raw">Raw Link 2C Pixels Only</option>
+            <option value="raw" selected>Clean Optical Video</option>
+            <option value="assist">Show Target Reticle Guide</option>
           </select>
         </div>
       </div>
     </div>
   </section>
+
+  <!-- Interactive 4K Astrophotography Lucky-Stack Split Comparison Modal -->
+  <div id="luckyModal" class="lucky-modal">
+    <div class="lucky-dialog">
+      <div class="lucky-header">
+        <div>
+          <strong id="luckyModalTitle" style="font-size: 14px;">✨ Planetary Lucky-Imaging &amp; Turbulence De-Warping</strong>
+          <span id="luckyModalStats" style="margin-left: 10px; color: var(--muted); font-size: 12px;"></span>
+        </div>
+        <div class="controls">
+          <span style="color: var(--muted);">Magnify:</span>
+          <button class="lucky-zoom-btn active" type="button" data-lz="1">1× Fit</button>
+          <button class="lucky-zoom-btn" type="button" data-lz="2.5">2.5×</button>
+          <button class="lucky-zoom-btn" type="button" data-lz="5">5× Pixel</button>
+          <a id="luckyDlAfter" href="/api/lucky_stack/after.png" download="hudson_lucky_stacked_4k.png" style="text-decoration:none;"><button type="button">⬇ 4K Stacked PNG</button></a>
+          <a id="luckyDlComp" href="/api/lucky_stack/comparison.png" download="hudson_lucky_comparison.png" style="text-decoration:none;"><button type="button">⬇ Comparison Card</button></a>
+          <button id="btnCloseLuckyModal" type="button">✕ Close</button>
+        </div>
+      </div>
+      <div class="lucky-canvas-wrap">
+        <canvas id="luckyCompareCanvas" width="1920" height="1080"></canvas>
+      </div>
+      <div class="lucky-footer">
+        <div>Drag the vertical divider to wipe <strong>Before (Left)</strong> vs. <strong>After Lucky Stack (Right)</strong> · Scroll wheel or click 2.5× / 5× + drag to inspect individual 4K pixels</div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span>Before</span>
+          <input id="luckySplitSlider" type="range" min="0" max="1000" value="500" style="width: 180px; cursor: pointer;" />
+          <span>After</span>
+        </div>
+      </div>
+      <div id="luckyLibraryStrip" style="display:flex; gap:10px; overflow-x:auto; padding:8px 14px 12px; border-top:1px solid rgba(255,255,255,0.08); background:rgba(8,12,20,0.85);"></div>
+    </div>
+  </div>
 
   <!-- Hidden media elements -->
   <video id="webcamVideo" autoplay playsinline muted style="display:none;"></video>

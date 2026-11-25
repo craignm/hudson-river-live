@@ -114,7 +114,9 @@ typedef enum {
     FMT_S16,
     FMT_U32,
     FMT_EV_CENTI,    // Insta360 signed int16 where -180 == -1.80 EV
-    FMT_HDR_BIT      // Insta360 XU 0x1B bit 2
+    FMT_HDR_BIT,     // Insta360 XU 0x1B bit 2
+    FMT_S32_PAIR,    // Standard UVC 8-byte (int32 pan_arcsec, int32 tilt_arcsec)
+    FMT_PT_DEG       // Standard UVC 8-byte Pan/Tilt formatted in degrees (3600 arcsec/deg)
 } val_fmt_t;
 
 typedef struct {
@@ -139,9 +141,12 @@ static const ctrl_spec_t kControls[] = {
     {"auto-exposure-mode",      UNIT_CT, 0x02, 1, FMT_U8,  "Standard UVC AE mode (1=Manual, 2=Auto, 4=Shutter, 8=Aperture)"},
     {"auto-exposure-priority",  UNIT_CT, 0x03, 1, FMT_U8,  "Standard UVC AE priority"},
     {"exposure-time-abs",       UNIT_CT, 0x04, 4, FMT_U32, "Standard UVC exposure time (100us units)"},
-    {"focus-abs",               UNIT_CT, 0x06, 2, FMT_U16, "Standard UVC absolute focus"},
-    {"auto-focus",              UNIT_CT, 0x08, 1, FMT_U8,  "Standard UVC autofocus (0/1)"},
-    {"zoom-abs",                UNIT_CT, 0x0b, 2, FMT_U16, "Standard UVC zoom (100..400)"},
+    {"focus-abs",               UNIT_CT, 0x06, 2, FMT_U16,      "Standard UVC absolute focus"},
+    {"auto-focus",              UNIT_CT, 0x08, 1, FMT_U8,       "Standard UVC autofocus (0/1)"},
+    {"iris-abs",                UNIT_CT, 0x09, 2, FMT_U16,      "Standard UVC iris / aperture"},
+    {"zoom-abs",                UNIT_CT, 0x0b, 2, FMT_U16,      "Standard UVC zoom (optical register)"},
+    {"pan-tilt-deg",            UNIT_CT, 0x0d, 8, FMT_PT_DEG,   "Standard UVC pan,tilt in degrees (e.g. +18.47,+1.52)"},
+    {"pan-tilt-arcsec",         UNIT_CT, 0x0d, 8, FMT_S32_PAIR, "Standard UVC pan,tilt in arcseconds (int32,int32)"},
 
     // Standard UVC Processing Unit controls
     {"backlight-compensation",  UNIT_PU, 0x01, 2, FMT_U16, "Standard UVC backlight compensation"},
@@ -485,53 +490,71 @@ static const ctrl_spec_t *find_ctrl_spec(const char *name) {
     return NULL;
 }
 
-static double decode_raw_bytes(const uint8_t *buf, const ctrl_spec_t *spec) {
-    switch (spec->fmt) {
-        case FMT_U8:
-            return (double)buf[0];
-        case FMT_U16: {
-            uint16_t v = (uint16_t)(buf[0] | ((uint16_t)buf[1] << 8));
-            return (double)v;
-        }
-        case FMT_S16: {
-            int16_t v = (int16_t)(buf[0] | ((uint16_t)buf[1] << 8));
-            return (double)v;
-        }
-        case FMT_U32: {
-            uint32_t v = (uint32_t)buf[0]
-                       | ((uint32_t)buf[1] << 8)
-                       | ((uint32_t)buf[2] << 16)
-                       | ((uint32_t)buf[3] << 24);
-            return (double)v;
-        }
-        case FMT_EV_CENTI: {
-            int16_t v = (int16_t)(buf[0] | ((uint16_t)buf[1] << 8));
-            return ((double)v) / 100.0;
-        }
-        case FMT_HDR_BIT: {
-            uint16_t mask = (uint16_t)(buf[0] | ((uint16_t)buf[1] << 8));
-            return (mask & (1u << INSTA_FEATURE_HDR_BIT)) ? 1.0 : 0.0;
-        }
-    }
-    return 0.0;
+static int32_t decode_le_s32(const uint8_t *b) {
+    uint32_t u = (uint32_t)b[0]
+               | ((uint32_t)b[1] << 8)
+               | ((uint32_t)b[2] << 16)
+               | ((uint32_t)b[3] << 24);
+    return (int32_t)u;
 }
 
-static void format_val(char *out, size_t outLen, double val, const ctrl_spec_t *spec) {
-    if (spec->fmt == FMT_EV_CENTI) {
-        snprintf(out, outLen, "%+.2f", val);
-    } else {
-        snprintf(out, outLen, "%.0f", val);
-    }
+static void encode_le_s32(uint8_t *b, int32_t val) {
+    uint32_t u = (uint32_t)val;
+    b[0] = (uint8_t)(u & 0xff);
+    b[1] = (uint8_t)((u >> 8) & 0xff);
+    b[2] = (uint8_t)((u >> 16) & 0xff);
+    b[3] = (uint8_t)((u >> 24) & 0xff);
 }
 
-static BOOL read_ctrl_value(uvc_cam_t *cam, const ctrl_spec_t *spec, uint8_t reqType, double *outVal, IOReturn *outRc) {
+static BOOL read_ctrl_formatted(uvc_cam_t *cam, const ctrl_spec_t *spec, uint8_t reqType, char *outStr, size_t outLen, IOReturn *outRc) {
     uint8_t unitId = unit_id_for_spec(cam, spec);
     if (unitId == 0) return NO;
     uint8_t buf[8] = {0};
     if (!cam_ctrl_transfer(cam, YES, reqType, unitId, spec->selector, buf, spec->byteLen, outRc)) {
         return NO;
     }
-    *outVal = decode_raw_bytes(buf, spec);
+    if (spec->fmt == FMT_S32_PAIR) {
+        int32_t p = decode_le_s32(&buf[0]);
+        int32_t t = decode_le_s32(&buf[4]);
+        snprintf(outStr, outLen, "%d,%d", p, t);
+        return YES;
+    }
+    if (spec->fmt == FMT_PT_DEG) {
+        int32_t p = decode_le_s32(&buf[0]);
+        int32_t t = decode_le_s32(&buf[4]);
+        snprintf(outStr, outLen, "%+.3f,%+.3f", ((double)p) / 3600.0, ((double)t) / 3600.0);
+        return YES;
+    }
+    double val = 0.0;
+    switch (spec->fmt) {
+        case FMT_U8:
+            val = (double)buf[0];
+            break;
+        case FMT_U16:
+            val = (double)((uint16_t)(buf[0] | ((uint16_t)buf[1] << 8)));
+            break;
+        case FMT_S16:
+            val = (double)((int16_t)(buf[0] | ((uint16_t)buf[1] << 8)));
+            break;
+        case FMT_U32:
+            val = (double)((uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24));
+            break;
+        case FMT_EV_CENTI:
+            val = ((double)((int16_t)(buf[0] | ((uint16_t)buf[1] << 8)))) / 100.0;
+            break;
+        case FMT_HDR_BIT: {
+            uint16_t mask = (uint16_t)(buf[0] | ((uint16_t)buf[1] << 8));
+            val = (mask & (1u << INSTA_FEATURE_HDR_BIT)) ? 1.0 : 0.0;
+            break;
+        }
+        default:
+            break;
+    }
+    if (spec->fmt == FMT_EV_CENTI) {
+        snprintf(outStr, outLen, "%+.2f", val);
+    } else {
+        snprintf(outStr, outLen, "%.0f", val);
+    }
     return YES;
 }
 
@@ -539,11 +562,49 @@ static BOOL write_ctrl_value(uvc_cam_t *cam, const ctrl_spec_t *spec, const char
     uint8_t unitId = unit_id_for_spec(cam, spec);
     if (unitId == 0) return NO;
 
+    uint8_t buf[8] = {0};
+    if (spec->fmt == FMT_S32_PAIR || spec->fmt == FMT_PT_DEG) {
+        const char *comma = strchr(valStr, ',');
+        if (!comma) return NO;
+        char *end1 = NULL;
+        char *end2 = NULL;
+        double v1 = strtod(valStr, &end1);
+        double v2 = strtod(comma + 1, &end2);
+        if (end1 == valStr || end2 == (comma + 1)) return NO;
+
+        int32_t panArc  = (spec->fmt == FMT_PT_DEG) ? (int32_t)llround(v1 * 3600.0) : (int32_t)llround(v1);
+        int32_t tiltArc = (spec->fmt == FMT_PT_DEG) ? (int32_t)llround(v2 * 3600.0) : (int32_t)llround(v2);
+
+        // Snap cleanly to camera firmware arcsecond resolution & clamp to hardware min/max if advertised
+        uint8_t resBuf[8] = {0}, minBuf[8] = {0}, maxBuf[8] = {0};
+        if (cam_ctrl_transfer(cam, YES, UVC_GET_RES, unitId, spec->selector, resBuf, 8, NULL)) {
+            int32_t resP = decode_le_s32(&resBuf[0]);
+            int32_t resT = decode_le_s32(&resBuf[4]);
+            if (resP > 1 && resP <= 36000) panArc  = (int32_t)llround(((double)panArc)  / (double)resP) * resP;
+            if (resT > 1 && resT <= 36000) tiltArc = (int32_t)llround(((double)tiltArc) / (double)resT) * resT;
+        }
+        if (cam_ctrl_transfer(cam, YES, UVC_GET_MIN, unitId, spec->selector, minBuf, 8, NULL) &&
+            cam_ctrl_transfer(cam, YES, UVC_GET_MAX, unitId, spec->selector, maxBuf, 8, NULL)) {
+            int32_t minP = decode_le_s32(&minBuf[0]), minT = decode_le_s32(&minBuf[4]);
+            int32_t maxP = decode_le_s32(&maxBuf[0]), maxT = decode_le_s32(&maxBuf[4]);
+            if (minP < maxP) {
+                if (panArc < minP) panArc = minP;
+                if (panArc > maxP) panArc = maxP;
+            }
+            if (minT < maxT) {
+                if (tiltArc < minT) tiltArc = minT;
+                if (tiltArc > maxT) tiltArc = maxT;
+            }
+        }
+        encode_le_s32(&buf[0], panArc);
+        encode_le_s32(&buf[4], tiltArc);
+        return cam_ctrl_transfer(cam, NO, UVC_SET_CUR, unitId, spec->selector, buf, 8, outRc);
+    }
+
     char *endPtr = NULL;
     double num = strtod(valStr, &endPtr);
     if (endPtr == valStr) return NO;
 
-    uint8_t buf[8] = {0};
     switch (spec->fmt) {
         case FMT_U8: {
             int v = (int)llround(num);
@@ -624,6 +685,8 @@ static BOOL write_ctrl_value(uvc_cam_t *cam, const ctrl_spec_t *spec, const char
             buf[1] = (uint8_t)((mask >> 8) & 0xff);
             break;
         }
+        default:
+            return NO;
     }
 
     return cam_ctrl_transfer(cam, NO, UVC_SET_CUR, unitId, spec->selector, buf, spec->byteLen, outRc);
@@ -641,6 +704,7 @@ static void print_usage(const char *prog) {
     printf("  -g, --get <control>         Read current control value\n");
     printf("  -s, --set <control>=<value> Write control value cooperatively over USB Endpoint 0\n");
     printf("      --ev <float>            Shorthand for -s exposure-comp-ev=<float> (-3.0 to +3.0)\n");
+    printf("  -L, --stdin-loop            Persistent line-buffered stdin daemon (name=val or ?name)\n");
     printf("  -R, --usb-reset             Re-enumerate USB device via IOKit (emulates physical unplug/replug)\n\n");
     printf("Examples:\n");
     printf("  %s --probe\n", prog);
@@ -775,6 +839,7 @@ int main(int argc, char * const argv[]) {
         BOOL optListControls = NO;
         BOOL optProbe        = NO;
         BOOL optUsbReset     = NO;
+        BOOL optStdinLoop    = NO;
         int  targetIndex     = -1;
         int  targetVid       = -1;
         int  targetPid       = -1;
@@ -787,6 +852,7 @@ int main(int argc, char * const argv[]) {
             {"list-controls", no_argument,       NULL, 'c'},
             {"probe",         no_argument,       NULL, 'p'},
             {"usb-reset",     no_argument,       NULL, 'R'},
+            {"stdin-loop",    no_argument,       NULL, 'L'},
             {"index",         required_argument, NULL, 'I'},
             {"vendor",        required_argument, NULL, 'V'},
             {"get",           required_argument, NULL, 'g'},
@@ -797,12 +863,13 @@ int main(int argc, char * const argv[]) {
         };
 
         int ch;
-        while ((ch = getopt_long(argc, argv, "dcpRI:V:g:s:e:h", longOpts, NULL)) != -1) {
+        while ((ch = getopt_long(argc, argv, "dcpRLI:V:g:s:e:h", longOpts, NULL)) != -1) {
             switch (ch) {
                 case 'd': optListDevices = YES; break;
                 case 'c': optListControls = YES; break;
                 case 'p': optProbe = YES; break;
                 case 'R': optUsbReset = YES; break;
+                case 'L': optStdinLoop = YES; break;
                 case 'I': targetIndex = atoi(optarg); break;
                 case 'V':
                     if (!parse_vid_pid(optarg, &targetVid, &targetPid)) {
@@ -831,7 +898,7 @@ int main(int argc, char * const argv[]) {
             return usb_reenumerate_matching_device(matchVid, targetPid);
         }
 
-        if (!optListDevices && !optListControls && !optProbe && gets.count == 0 && sets.count == 0) {
+        if (!optListDevices && !optListControls && !optProbe && !optStdinLoop && gets.count == 0 && sets.count == 0) {
             print_usage(argv[0]);
             return 0;
         }
@@ -913,25 +980,19 @@ int main(int argc, char * const argv[]) {
             for (size_t i = 0; i < kNumControls; i++) {
                 const ctrl_spec_t *sp = &kControls[i];
                 if (sp->unitKind == UNIT_INSTA_XU && cam->vendorId != INSTA360_VENDOR_ID) continue;
-                double cur = 0, mn = 0, mx = 0, st = 0, df = 0;
-                if (read_ctrl_value(cam, sp, UVC_GET_CUR, &cur, NULL)) {
-                    char curS[32], minS[32], maxS[32], stS[32], defS[32];
-                    format_val(curS, sizeof(curS), cur, sp);
-                    BOOL hasMin = read_ctrl_value(cam, sp, UVC_GET_MIN, &mn, NULL);
-                    BOOL hasMax = read_ctrl_value(cam, sp, UVC_GET_MAX, &mx, NULL);
-                    BOOL hasRes = read_ctrl_value(cam, sp, UVC_GET_RES, &st, NULL);
-                    BOOL hasDef = read_ctrl_value(cam, sp, UVC_GET_DEF, &df, NULL);
-                    printf("  %-24s = %-8s", sp->name, curS);
+                char curS[64], minS[64], maxS[64], stS[64], defS[64];
+                if (read_ctrl_formatted(cam, sp, UVC_GET_CUR, curS, sizeof(curS), NULL)) {
+                    BOOL hasMin = read_ctrl_formatted(cam, sp, UVC_GET_MIN, minS, sizeof(minS), NULL);
+                    BOOL hasMax = read_ctrl_formatted(cam, sp, UVC_GET_MAX, maxS, sizeof(maxS), NULL);
+                    BOOL hasRes = read_ctrl_formatted(cam, sp, UVC_GET_RES, stS,  sizeof(stS),  NULL);
+                    BOOL hasDef = read_ctrl_formatted(cam, sp, UVC_GET_DEF, defS, sizeof(defS), NULL);
+                    printf("  %-24s = %-16s", sp->name, curS);
                     if (hasMin && hasMax) {
-                        format_val(minS, sizeof(minS), mn, sp);
-                        format_val(maxS, sizeof(maxS), mx, sp);
                         printf(" [range %s .. %s", minS, maxS);
                         if (hasRes) {
-                            format_val(stS, sizeof(stS), st, sp);
                             printf(", step %s", stS);
                         }
                         if (hasDef) {
-                            format_val(defS, sizeof(defS), df, sp);
                             printf(", default %s", defS);
                         }
                         printf("]");
@@ -976,10 +1037,8 @@ int main(int argc, char * const argv[]) {
                 continue;
             }
 
-            double readBack = 0;
-            if (read_ctrl_value(cam, sp, UVC_GET_CUR, &readBack, NULL)) {
-                char rbS[32];
-                format_val(rbS, sizeof(rbS), readBack, sp);
+            char rbS[64];
+            if (read_ctrl_formatted(cam, sp, UVC_GET_CUR, rbS, sizeof(rbS), NULL)) {
                 printf("%s=%s\n", sp->name, rbS);
             } else {
                 printf("%s=%s\n", sp->name, valStr);
@@ -994,16 +1053,62 @@ int main(int argc, char * const argv[]) {
                 exitCode = 2;
                 continue;
             }
-            double cur = 0;
+            char curS[64];
             IOReturn rc = kIOReturnSuccess;
-            if (!read_ctrl_value(cam, sp, UVC_GET_CUR, &cur, &rc)) {
+            if (!read_ctrl_formatted(cam, sp, UVC_GET_CUR, curS, sizeof(curS), &rc)) {
                 fprintf(stderr, "ERROR: Failed reading %s (IOReturn 0x%08x)\n", sp->name, rc);
                 exitCode = 1;
                 continue;
             }
-            char curS[32];
-            format_val(curS, sizeof(curS), cur, sp);
             printf("%s=%s\n", sp->name, curS);
+        }
+
+        if (optStdinLoop) {
+            printf("READY vendor=0x%04x product=0x%04x name=\"%s\"\n", cam->vendorId, cam->productId, cam->name);
+            fflush(stdout);
+            char line[256];
+            while (fgets(line, sizeof(line), stdin) != NULL) {
+                size_t len = strlen(line);
+                while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' ')) {
+                    line[--len] = '\0';
+                }
+                if (len == 0) continue;
+                if (strcasecmp(line, "quit") == 0 || strcasecmp(line, "exit") == 0) break;
+                if (line[0] == '?') {
+                    const ctrl_spec_t *sp = find_ctrl_spec(line + 1);
+                    char curS[64];
+                    IOReturn rc = kIOReturnSuccess;
+                    if (sp && read_ctrl_formatted(cam, sp, UVC_GET_CUR, curS, sizeof(curS), &rc)) {
+                        printf("OK %s=%s\n", sp->name, curS);
+                    } else {
+                        printf("ERR %s 0x%08x\n", line + 1, rc);
+                    }
+                    fflush(stdout);
+                    continue;
+                }
+                const char *eq = strchr(line, '=');
+                if (!eq) {
+                    printf("ERR syntax\n");
+                    fflush(stdout);
+                    continue;
+                }
+                char nameBuf[64] = {0};
+                size_t nlen = (size_t)(eq - line);
+                if (nlen == 0 || nlen >= sizeof(nameBuf)) {
+                    printf("ERR name\n");
+                    fflush(stdout);
+                    continue;
+                }
+                memcpy(nameBuf, line, nlen);
+                const ctrl_spec_t *sp = find_ctrl_spec(nameBuf);
+                IOReturn rc = kIOReturnSuccess;
+                if (sp && write_ctrl_value(cam, sp, eq + 1, &rc)) {
+                    printf("OK %s\n", sp->name);
+                } else {
+                    printf("ERR %s 0x%08x\n", nameBuf, rc);
+                }
+                fflush(stdout);
+            }
         }
 
         for (int i = 0; i < camCount; i++) {
